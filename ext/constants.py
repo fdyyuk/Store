@@ -67,8 +67,8 @@ class EXTENSIONS:
     
     # Fitur tambahan
     FEATURES: List[str] = [
-        'ext.live_stock',
         'ext.live_buttons',
+        'ext.live_stock',
         'ext.donate'
     ]
     
