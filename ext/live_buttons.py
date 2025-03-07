@@ -1,3 +1,9 @@
+"""
+Live Buttons Manager with Shop Integration
+Author: fdyyuk
+Created at: 2025-03-07 18:33:18 UTC
+"""
+
 import logging
 import asyncio
 from typing import Optional, List, Dict
@@ -6,11 +12,16 @@ from datetime import datetime
 import discord
 from discord.ext import commands
 from discord.ui import Button, View, Modal, TextInput, Select
+
 from .constants import (
-    COLORS,        # Untuk warna embed
-    MESSAGES,      # Untuk pesan response
-    Balance,       # Untuk display balance
-    TransactionType # Untuk tipe transaksi
+    COLORS,
+    MESSAGES,
+    Balance,
+    TransactionType,
+    BUTTON_IDS,
+    CURRENCY_RATES,
+    CACHE_TIMEOUT,
+    Stock
 )
 
 from .base_handler import BaseLockHandler
@@ -18,9 +29,24 @@ from .cache_manager import CacheManager
 from .product_manager import ProductManagerService
 from .balance_manager import BalanceManagerService
 
+class PurchaseConfirmModal(Modal):
+    def __init__(self, product_code: str, price: int):
+        super().__init__(title="🛍️ Konfirmasi Pembelian")
+        self.product_code = product_code
+        self.price = price
+        
+        self.quantity = TextInput(
+            label="Jumlah yang ingin dibeli",
+            placeholder="Masukkan jumlah...",
+            min_length=1,
+            max_length=3,
+            required=True
+        )
+        self.add_item(self.quantity)
+
 class ShopView(View):
     def __init__(self, bot):
-        super().__init__(timeout=None)  # View persisten tanpa timeout
+        super().__init__(timeout=None)  # View persisten
         self.bot = bot
         self.balance_manager = BalanceManagerService(bot)
         self.product_manager = ProductManagerService(bot)
@@ -51,12 +77,16 @@ class ShopView(View):
     @discord.ui.button(
         style=discord.ButtonStyle.primary,
         label="📝 Daftar",
-        custom_id="register"
+        custom_id=BUTTON_IDS.REGISTER
     )
     async def register_callback(self, interaction: discord.Interaction, button: Button):
         if not await self._acquire_interaction_lock(str(interaction.id)):
             await interaction.response.send_message(
-                "Mohon tunggu, permintaan sebelumnya sedang diproses...",
+                embed=discord.Embed(
+                    title="⏳ Mohon Tunggu",
+                    description=MESSAGES.INFO['COOLDOWN'].format(time=3),
+                    color=COLORS['warning']
+                ),
                 ephemeral=True
             )
             return
@@ -66,8 +96,8 @@ class ShopView(View):
             if existing_growid:
                 await interaction.response.send_message(
                     embed=discord.Embed(
-                        title="❌ Error",
-                        description=f"Anda sudah terdaftar dengan GrowID: {existing_growid}",
+                        title="❌ Sudah Terdaftar",
+                        description=f"Anda sudah terdaftar dengan GrowID: `{existing_growid}`",
                         color=COLORS['error']
                     ),
                     ephemeral=True
@@ -78,11 +108,12 @@ class ShopView(View):
             await interaction.response.send_modal(modal)
     
         except Exception as e:
+            self.logger.error(f"Error in register callback: {e}")
             if not interaction.response.is_done():
                 await interaction.response.send_message(
                     embed=discord.Embed(
                         title="❌ Error",
-                        description=f"```diff\n- {str(e)}```",
+                        description=MESSAGES.ERROR['TRANSACTION_FAILED'],
                         color=COLORS['error']
                     ),
                     ephemeral=True
@@ -93,12 +124,16 @@ class ShopView(View):
     @discord.ui.button(
         style=discord.ButtonStyle.success,
         label="💰 Saldo",
-        custom_id="balance"
+        custom_id=BUTTON_IDS.BALANCE
     )
     async def balance_callback(self, interaction: discord.Interaction, button: Button):
         if not await self._acquire_interaction_lock(str(interaction.id)):
             await interaction.response.send_message(
-                "Mohon tunggu, permintaan sebelumnya sedang diproses...",
+                embed=discord.Embed(
+                    title="⏳ Mohon Tunggu",
+                    description=MESSAGES.INFO['COOLDOWN'].format(time=3),
+                    color=COLORS['warning']
+                ),
                 ephemeral=True
             )
             return
@@ -108,11 +143,11 @@ class ShopView(View):
             
             growid = await self.balance_manager.get_growid(str(interaction.user.id))
             if not growid:
-                raise ValueError("Silakan daftar GrowID Anda terlebih dahulu!")
+                raise ValueError(MESSAGES.ERROR['NOT_REGISTERED'])
 
             balance = await self.balance_manager.get_balance(growid)
             if not balance:
-                raise ValueError("Tidak dapat mengambil data saldo")
+                raise ValueError(MESSAGES.ERROR['BALANCE_NOT_FOUND'])
 
             embed = discord.Embed(
                 title="💰 Informasi Saldo",
@@ -120,9 +155,18 @@ class ShopView(View):
                 color=COLORS['info']
             )
             
+            # Format balance dengan currency rates
+            balance_wls = balance.get_total_wls()
+            if balance_wls >= CURRENCY_RATES.RATES['BGL']:
+                display_balance = f"{balance_wls/CURRENCY_RATES.RATES['BGL']:.1f} BGL"
+            elif balance_wls >= CURRENCY_RATES.RATES['DL']:
+                display_balance = f"{balance_wls/CURRENCY_RATES.RATES['DL']:.0f} DL"
+            else:
+                display_balance = f"{balance_wls} WL"
+                
             embed.add_field(
                 name="Saldo Saat Ini",
-                value=f"```yml\n{balance.format()}```",
+                value=f"```yml\n{display_balance}```",
                 inline=False
             )
             
@@ -144,9 +188,10 @@ class ShopView(View):
             await interaction.followup.send(embed=embed, ephemeral=True)
 
         except Exception as e:
+            self.logger.error(f"Error in balance callback: {e}")
             error_embed = discord.Embed(
                 title="❌ Error",
-                description=f"```diff\n- {str(e)}```",
+                description=MESSAGES.ERROR['TRANSACTION_FAILED'],
                 color=COLORS['error']
             )
             await interaction.followup.send(embed=error_embed, ephemeral=True)
@@ -156,12 +201,16 @@ class ShopView(View):
     @discord.ui.button(
         style=discord.ButtonStyle.secondary,
         label="🌎 World Info",
-        custom_id="world_info"
+        custom_id=BUTTON_IDS.WORLD_INFO
     )
     async def world_info_callback(self, interaction: discord.Interaction, button: Button):
         if not await self._acquire_interaction_lock(str(interaction.id)):
             await interaction.response.send_message(
-                "Mohon tunggu, permintaan sebelumnya sedang diproses...",
+                embed=discord.Embed(
+                    title="⏳ Mohon Tunggu",
+                    description=MESSAGES.INFO['COOLDOWN'].format(time=3),
+                    color=COLORS['warning']
+                ),
                 ephemeral=True
             )
             return
@@ -177,7 +226,7 @@ class ShopView(View):
             )
             
             embed.add_field(
-                name="Details",
+                name="Detail World",
                 value=(
                     "```yml\n"
                     f"World Name : {world_info['name']}\n"
@@ -194,9 +243,10 @@ class ShopView(View):
             await interaction.followup.send(embed=embed, ephemeral=True)
 
         except Exception as e:
+            self.logger.error(f"Error in world info callback: {e}")
             error_embed = discord.Embed(
-                title="❌ Error", 
-                description=f"```diff\n- {str(e)}```",
+                title="❌ Error",
+                description=MESSAGES.ERROR['TRANSACTION_FAILED'],
                 color=COLORS['error']
             )
             await interaction.followup.send(embed=error_embed, ephemeral=True)
@@ -204,14 +254,18 @@ class ShopView(View):
             self._release_interaction_lock(str(interaction.id))
 
     @discord.ui.button(
-        style=discord.ButtonStyle.secondary,
+        style=discord.ButtonStyle.success,
         label="🛒 Beli",
-        custom_id="buy"
+        custom_id=BUTTON_IDS.BUY
     )
     async def buy_callback(self, interaction: discord.Interaction, button: Button):
         if not await self._acquire_interaction_lock(str(interaction.id)):
             await interaction.response.send_message(
-                "Mohon tunggu, permintaan sebelumnya sedang diproses...",
+                embed=discord.Embed(
+                    title="⏳ Mohon Tunggu",
+                    description=MESSAGES.INFO['COOLDOWN'].format(time=3),
+                    color=COLORS['warning']
+                ),
                 ephemeral=True
             )
             return
@@ -221,7 +275,7 @@ class ShopView(View):
             
             growid = await self.balance_manager.get_growid(str(interaction.user.id))
             if not growid:
-                raise ValueError("Silakan daftar GrowID Anda terlebih dahulu!")
+                raise ValueError(MESSAGES.ERROR['NOT_REGISTERED'])
 
             products = await self.product_manager.get_all_products()
             available_products = []
@@ -233,7 +287,7 @@ class ShopView(View):
                     available_products.append(product)
 
             if not available_products:
-                raise ValueError("Tidak ada produk yang tersedia saat ini")
+                raise ValueError(MESSAGES.ERROR['OUT_OF_STOCK'])
 
             embed = discord.Embed(
                 title="🏪 Daftar Produk",
@@ -242,11 +296,20 @@ class ShopView(View):
             )
 
             for product in available_products:
+                # Format harga
+                price = float(product['price'])
+                if price >= CURRENCY_RATES.RATES['BGL']:
+                    price_display = f"{price/CURRENCY_RATES.RATES['BGL']:.1f} BGL"
+                elif price >= CURRENCY_RATES.RATES['DL']:
+                    price_display = f"{price/CURRENCY_RATES.RATES['DL']:.0f} DL"
+                else:
+                    price_display = f"{int(price)} WL"
+                    
                 embed.add_field(
                     name=f"{product['name']} ({product['code']})",
                     value=(
                         f"```yml\n"
-                        f"Harga: {product['price']:,} WL\n"
+                        f"Harga: {price_display}\n"
                         f"Stok: {product['stock']} unit\n"
                         f"```"
                         f"{product.get('description', 'Tidak ada deskripsi')}"
@@ -260,9 +323,10 @@ class ShopView(View):
             await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
         except Exception as e:
+            self.logger.error(f"Error in buy callback: {e}")
             error_embed = discord.Embed(
                 title="❌ Error",
-                description=f"```diff\n- {str(e)}```",
+                description=MESSAGES.ERROR['TRANSACTION_FAILED'],
                 color=COLORS['error']
             )
             await interaction.followup.send(embed=error_embed, ephemeral=True)
@@ -272,12 +336,16 @@ class ShopView(View):
     @discord.ui.button(
         style=discord.ButtonStyle.secondary,
         label="📜 Riwayat",
-        custom_id="history"
+        custom_id=BUTTON_IDS.HISTORY
     )
     async def history_callback(self, interaction: discord.Interaction, button: Button):
         if not await self._acquire_interaction_lock(str(interaction.id)):
             await interaction.response.send_message(
-                "Mohon tunggu, permintaan sebelumnya sedang diproses...",
+                embed=discord.Embed(
+                    title="⏳ Mohon Tunggu",
+                    description=MESSAGES.INFO['COOLDOWN'].format(time=3),
+                    color=COLORS['warning']
+                ),
                 ephemeral=True
             )
             return
@@ -287,11 +355,11 @@ class ShopView(View):
             
             growid = await self.balance_manager.get_growid(str(interaction.user.id))
             if not growid:
-                raise ValueError("Silakan daftar GrowID Anda terlebih dahulu!")
+                raise ValueError(MESSAGES.ERROR['NOT_REGISTERED'])
 
             history = await self.balance_manager.get_transaction_history(growid, limit=5)
             if not history:
-                raise ValueError("Tidak ada riwayat transaksi")
+                raise ValueError(MESSAGES.ERROR['NO_HISTORY'])
 
             embed = discord.Embed(
                 title="📊 Riwayat Transaksi",
@@ -311,9 +379,8 @@ class ShopView(View):
                         f"Tipe: {trx['type']}\n"
                         f"Tanggal: {timestamp.strftime('%Y-%m-%d %H:%M:%S')} UTC\n"
                         f"Detail: {trx['details']}\n"
-                        f"Saldo Awal: {trx['old_balance']}\n"
-                        f"Saldo Akhir: {trx['new_balance']}\n"
-                        f"```"
+                        f"Status: {trx['status']}\n"
+                        "```"
                     ),
                     inline=False
                 )
@@ -324,24 +391,26 @@ class ShopView(View):
             await interaction.followup.send(embed=embed, ephemeral=True)
 
         except Exception as e:
+            self.logger.error(f"Error in history callback: {e}")
             error_embed = discord.Embed(
                 title="❌ Error",
-                description=f"```diff\n- {str(e)}```",
+                description=MESSAGES.ERROR['TRANSACTION_FAILED'],
                 color=COLORS['error']
             )
             await interaction.followup.send(embed=error_embed, ephemeral=True)
         finally:
             self._release_interaction_lock(str(interaction.id))
 
-class RegisterModal(discord.ui.Modal):
+class RegisterModal(Modal):
     def __init__(self):
         super().__init__(title="📝 Pendaftaran GrowID")
         
-        self.growid = discord.ui.TextInput(
+        self.growid = TextInput(
             label="Masukkan GrowID Anda",
             placeholder="Contoh: GROW_ID",
             min_length=3,
-            max_length=30
+            max_length=30,
+            required=True
         )
         self.add_item(self.growid)
 
@@ -350,9 +419,9 @@ class RegisterModal(discord.ui.Modal):
         try:
             balance_manager = BalanceManagerService(interaction.client)
             
-            growid = str(self.growid.value).strip()
+            growid = str(self.growid.value).strip().upper()
             if not growid:
-                raise ValueError("GrowID tidak boleh kosong!")
+                raise ValueError(MESSAGES.ERROR['INVALID_GROWID'])
                 
             await balance_manager.register_user(
                 str(interaction.user.id),
@@ -361,7 +430,7 @@ class RegisterModal(discord.ui.Modal):
             
             success_embed = discord.Embed(
                 title="✅ Berhasil",
-                description=f"GrowID `{growid}` berhasil didaftarkan!",
+                description=MESSAGES.SUCCESS['REGISTRATION'].format(growid=growid),
                 color=COLORS['success']
             )
             await interaction.followup.send(embed=success_embed, ephemeral=True)
@@ -378,8 +447,17 @@ class ProductSelect(discord.ui.Select):
     def __init__(self, products):
         options = []
         for product in products:
+            # Format harga untuk display
+            price = float(product['price'])
+            if price >= CURRENCY_RATES.RATES['BGL']:
+                price_display = f"{price/CURRENCY_RATES.RATES['BGL']:.1f} BGL"
+            elif price >= CURRENCY_RATES.RATES['DL']:
+                price_display = f"{price/CURRENCY_RATES.RATES['DL']:.0f} DL"
+            else:
+                price_display = f"{int(price)} WL"
+                
             option = discord.SelectOption(
-                label=f"{product['name']} ({product['price']:,} WL)",
+                label=f"{product['name']} ({price_display})",
                 value=product['code'],
                 description=f"Stok: {product['stock']} unit"
             )
@@ -400,37 +478,47 @@ class ProductSelect(discord.ui.Select):
             
             product = await product_manager.get_product(self.values[0])
             if not product:
-                raise ValueError("Produk tidak ditemukan")
+                raise ValueError(MESSAGES.ERROR['PRODUCT_NOT_FOUND'])
                 
             stock = await product_manager.get_stock_count(product['code'])
             if stock <= 0:
-                raise ValueError("Maaf, stok produk ini sedang habis")
+                raise ValueError(MESSAGES.ERROR['OUT_OF_STOCK'])
+
+            # Format harga
+            price = float(product['price'])
+            if price >= CURRENCY_RATES.RATES['BGL']:
+                price_display = f"{price/CURRENCY_RATES.RATES['BGL']:.1f} BGL"
+            elif price >= CURRENCY_RATES.RATES['DL']:
+                price_display = f"{price/CURRENCY_RATES.RATES['DL']:.0f} DL"
+            else:
+                price_display = f"{int(price)} WL"
                 
             embed = discord.Embed(
                 title="🛍️ Konfirmasi Pembelian",
                 description=(
                     f"```yml\n"
                     f"Produk: {product['name']}\n"
-                    f"Harga: {product['price']:,} WL\n"
+                    f"Harga: {price_display}\n"
                     f"Stok: {stock} unit\n"
                     f"```"
                 ),
                 color=COLORS['info']
             )
             
+            # Create confirmation view
             view = View(timeout=180)
             view.add_item(
                 Button(
                     style=discord.ButtonStyle.success,
                     label="✅ Konfirmasi",
-                    custom_id=f"confirm_purchase_{product['code']}"
+                    custom_id=f"{BUTTON_IDS.CONFIRM_PURCHASE}_{product['code']}"
                 )
             )
             view.add_item(
                 Button(
                     style=discord.ButtonStyle.danger,
                     label="❌ Batal",
-                    custom_id="cancel_purchase"
+                    custom_id=BUTTON_IDS.CANCEL_PURCHASE
                 )
             )
             
@@ -465,18 +553,19 @@ class LiveButtonManager(BaseLockHandler):
             self.logger = logging.getLogger("LiveButtonManager")
             self.cache_manager = CacheManager()
             self.stock_channel_id = int(self.bot.config.get('id_live_stock', 0))
-            self.current_button_message: Optional[discord.Message] = None
+            self.current_message: Optional[discord.Message] = None
             self.stock_manager = None
             self.initialized = True
 
     async def set_stock_manager(self, stock_manager):
-        """Set stock manager untuk sinkronisasi"""
+        """Set stock manager untuk integrasi"""
         self.stock_manager = stock_manager
+        await stock_manager.set_button_manager(self)
 
-    async def get_or_create_button_message(self) -> Optional[discord.Message]:
-        """Ambil pesan tombol yang ada atau buat baru"""
+    async def get_or_create_message(self) -> Optional[discord.Message]:
+        """Create or get existing message with both stock display and buttons"""
         if not self.stock_channel_id:
-            self.logger.error("ID channel stock belum dikonfigurasi!")
+            self.logger.error("Stock channel ID not configured!")
             return None
 
         channel = self.bot.get_channel(self.stock_channel_id)
@@ -485,43 +574,50 @@ class LiveButtonManager(BaseLockHandler):
             return None
 
         try:
-            message_id = await self.cache_manager.get("live_buttons_message_id")
+            message_id = await self.cache_manager.get("live_stock_message_id")
             if message_id:
                 try:
                     message = await channel.fetch_message(message_id)
-                    self.current_button_message = message
+                    self.current_message = message
+                    if self.stock_manager:
+                        self.stock_manager.current_stock_message = message
                     return message
                 except discord.NotFound:
-                    await self.cache_manager.delete("live_buttons_message_id")
+                    await self.cache_manager.delete("live_stock_message_id")
                 except Exception as e:
-                    self.logger.error(f"Error mengambil pesan tombol: {e}")
+                    self.logger.error(f"Error mengambil pesan: {e}")
 
-            # Buat pesan baru dengan tombol
+            # Buat pesan baru dengan embed dari stock manager dan view buttons
+            embed = await self.stock_manager.create_stock_embed() if self.stock_manager else discord.Embed(title="Loading...")
             view = ShopView(self.bot)
-            message = await channel.send(view=view)
+            message = await channel.send(embed=embed, view=view)
             
-            self.current_button_message = message
+            self.current_message = message
+            if self.stock_manager:
+                self.stock_manager.current_stock_message = message
+                
             await self.cache_manager.set(
-                "live_buttons_message_id", 
+                "live_stock_message_id",
                 message.id,
-                expires_in=86400,
-                permanent=True
+                expires_in=CACHE_TIMEOUT.PERMANENT
             )
             return message
 
         except Exception as e:
-            self.logger.error(f"Error in get_or_create_button_message: {e}")
+            self.logger.error(f"Error in get_or_create_message: {e}")
             return None
 
     async def update_buttons(self) -> bool:
-        """Update tombol-tombol"""
+        """Update buttons display"""
         try:
-            message = await self.get_or_create_button_message()
-            if not message:
+            if not self.current_message:
+                self.current_message = await self.get_or_create_message()
+                
+            if not self.current_message:
                 return False
 
-            # Update view dengan tombol baru
-            await message.edit(view=ShopView(self.bot))
+            view = ShopView(self.bot)
+            await self.current_message.edit(view=view)
             return True
 
         except Exception as e:
@@ -529,20 +625,17 @@ class LiveButtonManager(BaseLockHandler):
             return False
 
     async def cleanup(self):
-        """Bersihkan resources"""
+        """Cleanup resources"""
         try:
-            if self.current_button_message:
+            if self.current_message:
                 embed = discord.Embed(
                     title="🛠️ Maintenance",
-                    description="```diff\n- Toko sedang offline\n- Mohon tunggu maintenance selesai\n```",
+                    description=MESSAGES.INFO['MAINTENANCE'],
                     color=COLORS['warning']
                 )
-                await self.current_button_message.edit(
-                    embed=embed,
-                    view=None
-                )
+                await self.current_message.edit(embed=embed, view=None)
         except Exception as e:
-            self.logger.error(f"Error dalam cleanup: {e}")
+            self.logger.error(f"Error in cleanup: {e}")
 
 class LiveButtonsCog(commands.Cog):
     def __init__(self, bot):
@@ -553,20 +646,16 @@ class LiveButtonsCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_ready(self):
-        """Setup tombol ketika bot siap"""
+        """Setup buttons when bot is ready"""
         await self.button_manager.update_buttons()
 
     async def cog_load(self):
-        """Setup saat cog dimuat"""
+        """Setup when cog is loaded"""
         self.logger.info("LiveButtonsCog loading...")
-        # Dapatkan stock manager dari bot
         stock_cog = self.bot.get_cog('LiveStockCog')
         if stock_cog:
             self.stock_manager = stock_cog.stock_manager
-        # Set up cross-references
-        await self.button_manager.set_stock_manager(self.stock_manager)
-        if self.stock_manager:
-            await self.stock_manager.set_button_manager(self.button_manager)
+            await self.button_manager.set_stock_manager(self.stock_manager)
 
     async def cog_unload(self):
         await self.button_manager.cleanup()
@@ -576,3 +665,4 @@ async def setup(bot):
     if not hasattr(bot, 'live_buttons_loaded'):
         await bot.add_cog(LiveButtonsCog(bot))
         bot.live_buttons_loaded = True
+        logging.info("LiveButtonsCog loaded successfully")
