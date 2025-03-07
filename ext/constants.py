@@ -1,12 +1,89 @@
 """
 Constants for Store DC Bot
 Author: fdyyuk
-Created at: 2025-03-07 06:30:34 UTC
+Created at: 2025-03-07 18:04:56 UTC
 """
 
 import discord
 from enum import Enum, auto
-from typing import Dict, Union
+from typing import Dict, Union, List
+
+# File Size Settings
+MAX_STOCK_FILE_SIZE = 5 * 1024 * 1024  # 5MB max file size for stock files
+MAX_ATTACHMENT_SIZE = 8 * 1024 * 1024  # 8MB max attachment size
+MAX_EMBED_SIZE = 6000  # Discord embed character limit
+
+# Valid Stock Formats
+VALID_STOCK_FORMATS = ['txt']  # Format file yang diizinkan untuk stock
+
+# Transaction Types
+class TransactionType(Enum):
+    PURCHASE = "purchase"
+    DONATION = "donation"
+    ADMIN_ADD = "admin_add"
+    ADMIN_REMOVE = "admin_remove"
+    ADMIN_RESET = "admin_reset"  # Ditambahkan untuk fitur reset
+    REFUND = "refund"
+    TRANSFER = "transfer"
+
+# Transaction Types untuk referensi dictionary
+TRANSACTION_TYPES = {
+    'PURCHASE': "purchase",
+    'DONATION': "donation",
+    'ADMIN_ADD': "admin_add",
+    'ADMIN_REMOVE': "admin_remove",
+    'ADMIN_RESET': "admin_reset",
+    'REFUND': "refund",
+    'TRANSFER': "transfer"
+}
+
+# Status Enums
+class Status(Enum):
+    SUCCESS = auto()
+    FAILED = auto()
+    PENDING = auto()
+    CANCELLED = auto()
+    ERROR = auto()
+    IN_STOCK = "Tersedia"
+    LOW_STOCK = "Stock Menipis"
+    OUT_OF_STOCK = "Habis"
+    DISCONTINUED = "Dihentikan"
+
+# Balance Settings
+class Balance:
+    MIN_AMOUNT = 0
+    MAX_AMOUNT = 1000000  # 1M WLS
+    DEFAULT_AMOUNT = 0
+    DONATION_MIN = 10     # 10 WLS minimum donation
+
+# Extensions Configuration
+class EXTENSIONS:
+    # Core extensions yang wajib diload
+    CORE: List[str] = [
+        'ext.balance_manager',
+        'ext.product_manager',
+        'ext.trx'
+    ]
+    
+    # Fitur tambahan
+    FEATURES: List[str] = [
+        'ext.live_stock',
+        'ext.live_buttons',
+        'ext.donate'
+    ]
+    
+    # Extension opsional
+    OPTIONAL: List[str] = [
+        'cogs.admin',
+        'cogs.stats',
+        'cogs.automod',
+        'cogs.tickets',
+        'cogs.welcome',
+        'cogs.leveling'
+    ]
+    
+    # Daftar semua extensions
+    ALL: List[str] = CORE + FEATURES + OPTIONAL
 
 # Currency Settings
 class CURRENCY_RATES:
@@ -45,52 +122,40 @@ class CURRENCY_RATES:
     }
     
     @classmethod
-    def to_wl(cls, amount: int, currency: str) -> int:
+    def to_wl(cls, amount: Union[int, float], currency: str) -> float:
         """Convert any currency to WL"""
         if currency not in cls.SUPPORTED:
-            raise ValueError(f"Unsupported currency: {currency}")
-        return amount * cls.RATES[currency]
+            raise ValueError(f"Mata uang tidak didukung: {currency}")
+        return float(amount) * cls.RATES[currency]
     
     @classmethod
-    def from_wl(cls, wl_amount: int, to_currency: str) -> int:
+    def from_wl(cls, wl_amount: Union[int, float], to_currency: str) -> float:
         """Convert WL to any currency"""
         if to_currency not in cls.SUPPORTED:
-            raise ValueError(f"Unsupported currency: {to_currency}")
-        return wl_amount // cls.RATES[to_currency]
+            raise ValueError(f"Mata uang tidak didukung: {to_currency}")
+        return float(wl_amount) / cls.RATES[to_currency]
     
     @classmethod
-    def convert(cls, amount: int, from_currency: str, to_currency: str) -> int:
+    def convert(cls, amount: Union[int, float], from_currency: str, to_currency: str) -> float:
         """Convert between currencies"""
         wl_amount = cls.to_wl(amount, from_currency)
         return cls.from_wl(wl_amount, to_currency)
     
     @classmethod
-    def format(cls, amount: int, currency: str) -> str:
+    def format(cls, amount: Union[int, float], currency: str) -> str:
         """Format amount in specified currency"""
         if currency not in cls.FORMATS:
-            raise ValueError(f"Unsupported currency: {currency}")
+            raise ValueError(f"Mata uang tidak didukung: {currency}")
         return cls.FORMATS[currency].format(amount)
 
-# Status Enums
-class Status(Enum):
-    SUCCESS = auto()
-    FAILED = auto()
-    PENDING = auto()
-    CANCELLED = auto()
-    ERROR = auto()
-
-# Custom Exceptions
-class TransactionError(Exception):
-    """Base exception for transaction related errors"""
-    pass
-
-class InsufficientBalanceError(TransactionError):
-    """Raised when user has insufficient balance"""
-    pass
-
-class OutOfStockError(TransactionError):
-    """Raised when item is out of stock"""
-    pass
+# Stock Settings
+class Stock:
+    MAX_ITEMS = 1000
+    MIN_ITEMS = 0
+    UPDATE_BATCH_SIZE = 50
+    ALERT_THRESHOLD = 10
+    MAX_STOCK = 999999
+    MIN_STOCK = 0
 
 # Discord Colors
 class COLORS:
@@ -124,63 +189,20 @@ class MESSAGES:
         'COOLDOWN': "⏳ Mohon tunggu {time} detik"
     }
 
-# Transaction Types
-class TransactionType(Enum):
-    PURCHASE = "purchase"
-    DONATION = "donation"
-    ADMIN_ADD = "admin_add"
-    ADMIN_REMOVE = "admin_remove"
-
-# Balance Settings
-class Balance:
-    MIN_AMOUNT = 0
-    MAX_AMOUNT = 1000000  # 1M WLS
-    DEFAULT_AMOUNT = 0
-    DONATION_MIN = 10     # 10 WLS minimum donation
+# Button IDs
+class BUTTON_IDS:
+    CONFIRM = "confirm_{}"
+    CANCEL = "cancel_{}"
+    BUY = "buy_{}"
+    DONATE = "donate"
+    REFRESH = "refresh"
 
 # Update Intervals (in seconds)
 class UPDATE_INTERVAL:
-    LIVE_STOCK = 60.0    # Update live stock every 60 seconds
+    LIVE_STOCK = 55.0    # Update live stock every 55 seconds
     BUTTONS = 30.0       # Update buttons every 30 seconds
     CACHE = 300.0        # Cache timeout 5 minutes
     STATUS = 15.0        # Status update every 15 seconds
-
-# Extensions Configuration
-class EXTENSIONS:
-    CORE = [
-        'ext.balance_manager',
-        'ext.product_manager',
-        'ext.trx'
-    ]
-    
-    FEATURES = [
-        'ext.live_stock',
-        'ext.live_buttons',
-        'ext.donate'
-    ]
-    
-    OPTIONAL = [
-        'cogs.admin',
-        'cogs.stats',
-        'cogs.automod',
-        'cogs.tickets',
-        'cogs.welcome',
-        'cogs.leveling'
-    ]
-
-# Paths Configuration
-class PATHS:
-    CONFIG = "config.json"
-    LOGS = "logs/"
-    DATABASE = "database.db"
-    BACKUP = "backups/"
-
-# Logging Configuration
-class LOGGING:
-    FORMAT = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    DATE_FORMAT = '%Y-%m-%d %H:%M:%S'
-    MAX_BYTES = 5 * 1024 * 1024  # 5MB
-    BACKUP_COUNT = 5
 
 # Cache Settings
 class CACHE_TIMEOUT:
@@ -189,55 +211,6 @@ class CACHE_TIMEOUT:
     LONG = 86400   # 24 hours
     PERMANENT = None
 
-# Interaction Settings
-class INTERACTION_TIMEOUT:
-    SHORT = 60    # 1 minute
-    MEDIUM = 180  # 3 minutes
-    LONG = 300    # 5 minutes
-    BUTTON = 180  # 3 minutes for buttons
-    MODAL = 600   # 10 minutes for modals
-
-# Button Custom IDs
-class BUTTON_IDS:
-    CONFIRM = "confirm_{}"
-    CANCEL = "cancel_{}"
-    BUY = "buy_{}"
-    DONATE = "donate"
-    REFRESH = "refresh"
-
-# Product Settings
-class Product:
-    MAX_STOCK = 999999
-    MIN_STOCK = 0
-    MAX_PRICE = 1000000  # 1M WLS
-    MIN_PRICE = 1        # 1 WL
-
-# Database Settings
-class Database:
-    TIMEOUT = 5
-    MAX_CONNECTIONS = 5
-    RETRY_ATTEMPTS = 3
-    RETRY_DELAY = 1
-
-# Stock Settings
-class Stock:
-    MAX_ITEMS = 1000
-    MIN_ITEMS = 0
-    UPDATE_BATCH_SIZE = 50
-    ALERT_THRESHOLD = 10
-    
-    class Status(Enum):
-        IN_STOCK = "In Stock"
-        LOW_STOCK = "Low Stock"
-        OUT_OF_STOCK = "Out of Stock"
-        DISCONTINUED = "Discontinued"
-
-# API Rate Limits
-class RateLimit:
-    MAX_REQUESTS = 5
-    TIME_WINDOW = 60
-    COOLDOWN = 30
-
 # Command Cooldowns (in seconds)
 class CommandCooldown:
     DEFAULT = 3
@@ -245,13 +218,38 @@ class CommandCooldown:
     ADMIN = 2
     DONATE = 10
 
-# Discord Message Limits
-class MessageLimits:
-    EMBED_TITLE = 256
-    EMBED_DESCRIPTION = 4096
-    EMBED_FIELDS = 25
-    EMBED_FIELD_NAME = 256
-    EMBED_FIELD_VALUE = 1024
-    EMBED_FOOTER = 2048
-    EMBED_AUTHOR = 256
-    MESSAGE_CONTENT = 2000
+# Database Settings
+class Database:
+    TIMEOUT = 5
+    MAX_CONNECTIONS = 5
+    RETRY_ATTEMPTS = 3
+    RETRY_DELAY = 1
+    BACKUP_INTERVAL = 86400  # 24 hours
+
+# Paths Configuration
+class PATHS:
+    CONFIG = "config.json"
+    LOGS = "logs/"
+    DATABASE = "database.db"
+    BACKUP = "backups/"
+    TEMP = "temp/"
+
+# Logging Configuration
+class LOGGING:
+    FORMAT = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    DATE_FORMAT = '%Y-%m-%d %H:%M:%S'
+    MAX_BYTES = 5 * 1024 * 1024  # 5MB
+    BACKUP_COUNT = 5
+
+# Custom Exceptions
+class TransactionError(Exception):
+    """Base exception for transaction related errors"""
+    pass
+
+class InsufficientBalanceError(TransactionError):
+    """Raised when user has insufficient balance"""
+    pass
+
+class OutOfStockError(TransactionError):
+    """Raised when item is out of stock"""
+    pass
