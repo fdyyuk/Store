@@ -1,3 +1,10 @@
+"""
+Transaction Manager Service
+Author: fdyyuk
+Created at: 2025-03-07 18:04:56 UTC
+Last Modified: 2025-03-08 05:36:32 UTC
+"""
+
 import logging
 import asyncio
 from typing import Optional, Dict, List, Union
@@ -6,11 +13,13 @@ from datetime import datetime
 import discord
 from discord.ext import commands
 from .constants import (
-    Status,          # Untuk STATUS_AVAILABLE, STATUS_SOLD
-    TransactionType, # Untuk tipe transaksi
-    Balance,        # Untuk manajemen balance
-    TransactionError, # Untuk error handling
-    MESSAGES        # Untuk pesan error/success
+    Status,          # Update: menggunakan Status enum
+    TransactionType, 
+    Balance,        
+    TransactionError,
+    MESSAGES,
+    CACHE_TIMEOUT,
+    COLORS
 )
 from database import get_connection
 from .base_handler import BaseLockHandler
@@ -48,28 +57,29 @@ class TransactionManager(BaseLockHandler):
         Process a purchase transaction with proper locking and validation
         Returns dict with status, message, and content list if successful
         """
+        if quantity < 1:
+            raise TransactionError(MESSAGES.ERROR['INVALID_AMOUNT'])
+
         lock = await self.acquire_lock(f"purchase_{buyer_id}_{product_code}")
         if not lock:
-            raise TransactionError("System is busy processing another transaction")
+            raise TransactionError(MESSAGES.ERROR['TRANSACTION_FAILED'])
 
         conn = None
         try:
             # Get buyer's GrowID and verify registration
             growid = await self.balance_manager.get_growid(buyer_id)
             if not growid:
-                raise TransactionError("You need to register your GrowID first!")
+                raise TransactionError(MESSAGES.ERROR['NOT_REGISTERED'])
 
             # Verify product exists and get details
             product = await self.product_manager.get_product(product_code)
             if not product:
-                raise TransactionError(f"Product {product_code} not found")
+                raise TransactionError(MESSAGES.ERROR['PRODUCT_NOT_FOUND'])
 
             # Check stock availability
             available_stock = await self.product_manager.get_available_stock(product_code, quantity)
             if not available_stock or len(available_stock) < quantity:
-                raise TransactionError(
-                    f"Insufficient stock! Only {len(available_stock)} available"
-                )
+                raise TransactionError(MESSAGES.ERROR['INSUFFICIENT_STOCK'])
 
             # Calculate total price
             total_price = product['price'] * quantity
@@ -77,14 +87,11 @@ class TransactionManager(BaseLockHandler):
             # Get current balance
             balance = await self.balance_manager.get_balance(growid)
             if not balance:
-                raise TransactionError("Could not retrieve balance")
+                raise TransactionError(MESSAGES.ERROR['BALANCE_NOT_FOUND'])
 
-            # Convert price to WL if needed and check balance
-            total_wl = total_price
-            if total_wl > balance.total_wl():
-                raise TransactionError(
-                    f"Insufficient balance! Need {total_wl:,} WL, you have {balance.total_wl():,} WL"
-                )
+            # Check balance
+            if total_price > balance.total_wl():
+                raise TransactionError(MESSAGES.ERROR['INSUFFICIENT_BALANCE'])
 
             conn = get_connection()
             cursor = conn.cursor()
@@ -103,13 +110,13 @@ class TransactionManager(BaseLockHandler):
                     SET status = ?, buyer_id = ?, updated_at = CURRENT_TIMESTAMP
                     WHERE id = ?
                     """,
-                    [(STATUS_SOLD, buyer_id, stock_id) for stock_id in stock_ids]
+                    [(Status.SOLD.value, buyer_id, stock_id) for stock_id in stock_ids]
                 )
 
                 # Update balance
                 new_balance = await self.balance_manager.update_balance(
                     growid=growid,
-                    wl=-total_wl,
+                    wl=-total_price,
                     details=f"Purchase {quantity}x {product['name']}",
                     transaction_type=TransactionType.PURCHASE.value
                 )
@@ -124,7 +131,7 @@ class TransactionManager(BaseLockHandler):
                     (
                         growid,
                         TransactionType.PURCHASE.value,
-                        f"Purchased {quantity}x {product['name']} for {total_wl:,} WL",
+                        f"Purchased {quantity}x {product['name']} for {total_price:,} WL",
                         balance.format(),
                         new_balance.format()
                     )
@@ -145,23 +152,25 @@ class TransactionManager(BaseLockHandler):
                 return {
                     'status': 'success',
                     'message': (
-                        f"Successfully purchased {quantity}x {product['name']}\n"
-                        f"Total paid: {total_wl:,} WL\n"
+                        f"{MESSAGES.SUCCESS['PURCHASE']}\n"
+                        f"Product: {product['name']}\n"
+                        f"Quantity: {quantity}x\n"
+                        f"Total paid: {total_price:,} WL\n"
                         f"New balance: {new_balance.format()}"
                     ),
                     'content': content_list,
-                    'total_paid': total_wl
+                    'total_paid': total_price
                 }
 
             except Exception as e:
                 conn.rollback()
-                raise TransactionError(f"Transaction failed: {str(e)}")
+                raise TransactionError(str(e))
 
-        except TransactionError as e:
+        except TransactionError:
             raise
         except Exception as e:
             self.logger.error(f"Error processing purchase: {e}")
-            raise TransactionError("An unexpected error occurred")
+            raise TransactionError(MESSAGES.ERROR['TRANSACTION_FAILED'])
         finally:
             if conn:
                 conn.close()
@@ -176,27 +185,30 @@ class TransactionManager(BaseLockHandler):
         admin_id: Optional[str] = None
     ) -> Dict[str, Union[str, Balance]]:
         """Process a deposit transaction with proper locking"""
+        if wl < 0 or dl < 0 or bgl < 0:
+            raise TransactionError(MESSAGES.ERROR['INVALID_AMOUNT'])
+
         lock = await self.acquire_lock(f"deposit_{user_id}")
         if not lock:
-            raise TransactionError("System is busy processing another transaction")
+            raise TransactionError(MESSAGES.ERROR['TRANSACTION_FAILED'])
 
         try:
             # Verify user registration
             growid = await self.balance_manager.get_growid(user_id)
             if not growid:
-                raise TransactionError("You need to register your GrowID first!")
+                raise TransactionError(MESSAGES.ERROR['NOT_REGISTERED'])
 
             # Calculate total deposit in WL
             total_wl = wl + (dl * 100) + (bgl * 10000)
             if total_wl <= 0:
-                raise TransactionError("Deposit amount must be greater than 0")
+                raise TransactionError(MESSAGES.ERROR['INVALID_AMOUNT'])
 
             # Process deposit
-            details = f"Deposit: {wl} WL"
+            details = f"Deposit: {wl:,} WL"
             if dl > 0:
-                details += f", {dl} DL"
+                details += f", {dl:,} DL"
             if bgl > 0:
-                details += f", {bgl} BGL"
+                details += f", {bgl:,} BGL"
             if admin_id:
                 admin_name = self.bot.get_user(int(admin_id))
                 details += f" (by {admin_name})"
@@ -217,7 +229,8 @@ class TransactionManager(BaseLockHandler):
             return {
                 'status': 'success',
                 'message': (
-                    f"Successfully deposited:\n"
+                    f"{MESSAGES.SUCCESS['BALANCE_UPDATE']}\n"
+                    f"Deposited:\n"
                     f"{wl:,} WL{f', {dl:,} DL' if dl > 0 else ''}"
                     f"{f', {bgl:,} BGL' if bgl > 0 else ''}\n"
                     f"New balance: {new_balance.format()}"
@@ -225,11 +238,11 @@ class TransactionManager(BaseLockHandler):
                 'new_balance': new_balance
             }
 
-        except TransactionError as e:
+        except TransactionError:
             raise
         except Exception as e:
             self.logger.error(f"Error processing deposit: {e}")
-            raise TransactionError("An unexpected error occurred")
+            raise TransactionError(MESSAGES.ERROR['TRANSACTION_FAILED'])
         finally:
             self.release_lock(f"deposit_{user_id}")
 
@@ -242,38 +255,39 @@ class TransactionManager(BaseLockHandler):
         admin_id: Optional[str] = None
     ) -> Dict[str, Union[str, Balance]]:
         """Process a withdrawal transaction with proper locking"""
+        if wl < 0 or dl < 0 or bgl < 0:
+            raise TransactionError(MESSAGES.ERROR['INVALID_AMOUNT'])
+
         lock = await self.acquire_lock(f"withdrawal_{user_id}")
         if not lock:
-            raise TransactionError("System is busy processing another transaction")
+            raise TransactionError(MESSAGES.ERROR['TRANSACTION_FAILED'])
 
         try:
             # Verify user registration
             growid = await self.balance_manager.get_growid(user_id)
             if not growid:
-                raise TransactionError("You need to register your GrowID first!")
+                raise TransactionError(MESSAGES.ERROR['NOT_REGISTERED'])
 
             # Get current balance
             current_balance = await self.balance_manager.get_balance(growid)
             if not current_balance:
-                raise TransactionError("Could not retrieve balance")
+                raise TransactionError(MESSAGES.ERROR['BALANCE_NOT_FOUND'])
 
             # Calculate total withdrawal in WL
             total_wl = wl + (dl * 100) + (bgl * 10000)
             if total_wl <= 0:
-                raise TransactionError("Withdrawal amount must be greater than 0")
+                raise TransactionError(MESSAGES.ERROR['INVALID_AMOUNT'])
 
             # Check if sufficient balance
             if total_wl > current_balance.total_wl():
-                raise TransactionError(
-                    f"Insufficient balance! You have {current_balance.total_wl():,} WL"
-                )
+                raise TransactionError(MESSAGES.ERROR['INSUFFICIENT_BALANCE'])
 
             # Process withdrawal
-            details = f"Withdrawal: {wl} WL"
+            details = f"Withdrawal: {wl:,} WL"
             if dl > 0:
-                details += f", {dl} DL"
+                details += f", {dl:,} DL"
             if bgl > 0:
-                details += f", {bgl} BGL"
+                details += f", {bgl:,} BGL"
             if admin_id:
                 admin_name = self.bot.get_user(int(admin_id))
                 details += f" (by {admin_name})"
@@ -294,7 +308,8 @@ class TransactionManager(BaseLockHandler):
             return {
                 'status': 'success',
                 'message': (
-                    f"Successfully withdrew:\n"
+                    f"{MESSAGES.SUCCESS['BALANCE_UPDATE']}\n"
+                    f"Withdrawn:\n"
                     f"{wl:,} WL{f', {dl:,} DL' if dl > 0 else ''}"
                     f"{f', {bgl:,} BGL' if bgl > 0 else ''}\n"
                     f"New balance: {new_balance.format()}"
@@ -302,11 +317,11 @@ class TransactionManager(BaseLockHandler):
                 'new_balance': new_balance
             }
 
-        except TransactionError as e:
+        except TransactionError:
             raise
         except Exception as e:
             self.logger.error(f"Error processing withdrawal: {e}")
-            raise TransactionError("An unexpected error occurred")
+            raise TransactionError(MESSAGES.ERROR['TRANSACTION_FAILED'])
         finally:
             self.release_lock(f"withdrawal_{user_id}")
 
