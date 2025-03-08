@@ -1,196 +1,280 @@
 """
-Live Stock Manager
+Constants for Store DC Bot
 Author: fdyyuk
-Created at: 2025-03-07 18:30:16 UTC
+Created at: 2025-03-07 18:04:56 UTC
 """
 
-import logging
-import asyncio
-from typing import Optional, Dict
-from datetime import datetime
-
 import discord
-from discord.ext import commands, tasks
-from .constants import (
-    COLORS,
-    UPDATE_INTERVAL,
-    CACHE_TIMEOUT,
-    Stock,
-    CURRENCY_RATES
-)
+from enum import Enum, auto
+from typing import Dict, Union, List
 
-from .base_handler import BaseLockHandler
-from .cache_manager import CacheManager
-from .product_manager import ProductManagerService
+# File Size Settings
+MAX_STOCK_FILE_SIZE = 5 * 1024 * 1024  # 5MB max file size for stock files
+MAX_ATTACHMENT_SIZE = 8 * 1024 * 1024  # 8MB max attachment size
+MAX_EMBED_SIZE = 6000  # Discord embed character limit
 
-class LiveStockManager(BaseLockHandler):
-    _instance = None
-    _instance_lock = asyncio.Lock()
+# Valid Stock Formats
+VALID_STOCK_FORMATS = ['txt']  # Format file yang diizinkan untuk stock
 
-    def __new__(cls, bot):
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-            cls._instance.initialized = False
-        return cls._instance
+# Transaction Types
+class TransactionType(Enum):
+    PURCHASE = "purchase"
+    DONATION = "donation"
+    ADMIN_ADD = "admin_add"
+    ADMIN_REMOVE = "admin_remove"
+    ADMIN_RESET = "admin_reset"  # Ditambahkan untuk fitur reset
+    REFUND = "refund"
+    TRANSFER = "transfer"
 
-    def __init__(self, bot):
-        if not self.initialized:
-            super().__init__()
-            self.bot = bot
-            self.logger = logging.getLogger("LiveStockManager")
-            self.cache_manager = CacheManager()
-            self.product_manager = ProductManagerService(bot)
-            self.stock_channel_id = int(self.bot.config.get('id_live_stock', 0))
-            self.current_stock_message: Optional[discord.Message] = None
-            self.button_manager = None  # Akan diset dari LiveButtonManager
-            self.initialized = True
+# Transaction Types untuk referensi dictionary
+TRANSACTION_TYPES = {
+    'PURCHASE': "purchase",
+    'DONATION': "donation",
+    'ADMIN_ADD': "admin_add",
+    'ADMIN_REMOVE': "admin_remove",
+    'ADMIN_RESET': "admin_reset",
+    'REFUND': "refund",
+    'TRANSFER': "transfer"
+}
 
-    async def set_button_manager(self, button_manager):
-        """Set button manager untuk integrasi"""
-        self.button_manager = button_manager
+# Status Enums
+class Status(Enum):
+    SUCCESS = auto()
+    FAILED = auto()
+    PENDING = auto()
+    CANCELLED = auto()
+    ERROR = auto()
+    IN_STOCK = "Tersedia"
+    LOW_STOCK = "Stock Menipis"
+    OUT_OF_STOCK = "Habis"
+    DISCONTINUED = "Dihentikan"
 
-    async def create_stock_embed(self) -> discord.Embed:
-        """Buat embed untuk display stock"""
-        try:
-            products = await self.product_manager.get_all_products()
-            
-            embed = discord.Embed(
-                title="🏪 Live Stock Status",
-                description=(
-                    "```yml\n"
-                    "Selamat datang di Growtopia Shop!\n"
-                    "Stock dan harga diperbarui secara real-time\n"
-                    "```"
-                ),
-                color=COLORS['info']
-            )
+# Balance Settings
+class Balance:
+    MIN_AMOUNT = 0
+    MAX_AMOUNT = 1000000  # 1M WLS
+    DEFAULT_AMOUNT = 0
+    DONATION_MIN = 10     # 10 WLS minimum donation
 
-            # Format waktu server
-            current_time = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-            embed.add_field(
-                name="🕒 Server Time",
-                value=f"```{current_time} UTC```",
-                inline=False
-            )
+# Extensions Configuration
+class EXTENSIONS:
+    # Core extensions yang wajib diload
+    CORE: List[str] = [
+        'ext.balance_manager',
+        'ext.product_manager',
+        'ext.trx'
+    ]
+    
+    # Fitur tambahan
+    FEATURES: List[str] = [
+        'ext.live_buttons',
+        'ext.live_stock',
+        'ext.donate'
+    ]
+    
+    # Extension opsional
+    OPTIONAL: List[str] = [
+        'cogs.admin',
+        'cogs.stats',
+        'cogs.automod',
+        'cogs.tickets',
+        'cogs.welcome',
+        'cogs.leveling'
+    ]
+    
+    # Daftar semua extensions
+    ALL: List[str] = CORE + FEATURES + OPTIONAL
 
-            # Display products dengan format yang lebih rapi
-            for product in products:
-                try:
-                    stock_count = await self.product_manager.get_stock_count(product['name'])
-                    
-                    # Emoji status berdasarkan threshold
-                    status_emoji = "🟢" if stock_count > Stock.ALERT_THRESHOLD else "🟡" if stock_count > 0 else "🔴"
-                    
-                    # Format harga dalam WL/DL/BGL
-                    try:
-                        price = float(product['price'])
-                        if price >= CURRENCY_RATES.RATES['BGL']:
-                            price_display = f"{price/CURRENCY_RATES.RATES['BGL']:.1f} BGL"
-                        elif price >= CURRENCY_RATES.RATES['DL']:
-                            price_display = f"{price/CURRENCY_RATES.RATES['DL']:.0f} DL"
-                        else:
-                            price_display = f"{int(price)} WL"
-                    except (ValueError, TypeError):
-                        price_display = "Invalid Price"
-                        self.logger.error(f"Invalid price format for product {product['name']}: {product['price']}")
+# Currency Settings
+class CURRENCY_RATES:
+    # Base rates (in WL)
+    RATES: Dict[str, int] = {
+        'WL': 1,        # 1 WL = 1 WL (base)
+        'DL': 100,      # 1 DL = 100 WL
+        'BGL': 10000    # 1 BGL = 10000 WL
+    }
+    
+    # Default currency
+    DEFAULT = 'WL'
+    
+    # Supported currencies
+    SUPPORTED = ['WL', 'DL', 'BGL']
+    
+    # Minimum amounts for each currency
+    MIN_AMOUNTS = {
+        'WL': 1,
+        'DL': 1,
+        'BGL': 1
+    }
+    
+    # Maximum amounts for each currency
+    MAX_AMOUNTS = {
+        'WL': 10000,
+        'DL': 100,
+        'BGL': 10
+    }
+    
+    # Display formats
+    FORMATS = {
+        'WL': '{} WL',
+        'DL': '{} DL',
+        'BGL': '{} BGL'
+    }
+    
+    @classmethod
+    def to_wl(cls, amount: Union[int, float], currency: str) -> float:
+        """Convert any currency to WL"""
+        if currency not in cls.SUPPORTED:
+            raise ValueError(f"Mata uang tidak didukung: {currency}")
+        return float(amount) * cls.RATES[currency]
+    
+    @classmethod
+    def from_wl(cls, wl_amount: Union[int, float], to_currency: str) -> float:
+        """Convert WL to any currency"""
+        if to_currency not in cls.SUPPORTED:
+            raise ValueError(f"Mata uang tidak didukung: {to_currency}")
+        return float(wl_amount) / cls.RATES[to_currency]
+    
+    @classmethod
+    def convert(cls, amount: Union[int, float], from_currency: str, to_currency: str) -> float:
+        """Convert between currencies"""
+        wl_amount = cls.to_wl(amount, from_currency)
+        return cls.from_wl(wl_amount, to_currency)
+    
+    @classmethod
+    def format(cls, amount: Union[int, float], currency: str) -> str:
+        """Format amount in specified currency"""
+        if currency not in cls.FORMATS:
+            raise ValueError(f"Mata uang tidak didukung: {currency}")
+        return cls.FORMATS[currency].format(amount)
 
-                    field_value = (
-                        "```yml\n"
-                        f"Price : {price_display}\n"
-                        f"Stock : {stock_count} unit\n"
-                        "```"
-                    )
-                    
-                    embed.add_field(
-                        name=f"{status_emoji} {product['name']}",
-                        value=field_value,
-                        inline=True
-                    )
-                except Exception as e:
-                    self.logger.error(f"Error processing product {product.get('name', 'Unknown')}: {e}")
-                    continue
+# Stock Settings
+class Stock:
+    MAX_ITEMS = 1000
+    MIN_ITEMS = 0
+    UPDATE_BATCH_SIZE = 50
+    ALERT_THRESHOLD = 10
+    MAX_STOCK = 999999
+    MIN_STOCK = 0
 
-            embed.set_footer(text=f"Auto-update setiap {int(UPDATE_INTERVAL.LIVE_STOCK)} detik")
-            embed.timestamp = datetime.utcnow()
-            return embed
+# Discord Colors
+class COLORS:
+    SUCCESS = discord.Color.green()
+    ERROR = discord.Color.red()
+    WARNING = discord.Color.yellow()
+    INFO = discord.Color.blue()
+    DEFAULT = discord.Color.blurple()
 
-        except Exception as e:
-            self.logger.error(f"Error creating stock embed: {e}")
-            return discord.Embed(
-                title="❌ System Error",
-                description="```diff\n- Live stock display is currently unavailable\n- Please try again later or contact admin\n```",
-                color=COLORS['error']
-            )
+# Message Templates
+class MESSAGES:
+    SUCCESS = {
+        'PURCHASE': "✅ Pembelian berhasil!\nDetail pembelian:",
+        'STOCK_UPDATE': "✅ Stock berhasil diupdate!",
+        'DONATION': "✅ Donasi berhasil diterima!",
+        'BALANCE_UPDATE': "✅ Balance berhasil diupdate!"
+    }
+    
+    ERROR = {
+        'INSUFFICIENT_BALANCE': "❌ Balance tidak cukup!",
+        'OUT_OF_STOCK': "❌ Stock habis!",
+        'INVALID_AMOUNT': "❌ Jumlah tidak valid!",
+        'PERMISSION_DENIED': "❌ Anda tidak memiliki izin!",
+        'INVALID_INPUT': "❌ Input tidak valid!",
+        'TRANSACTION_FAILED': "❌ Transaksi gagal!"
+    }
+    
+    INFO = {
+        'PROCESSING': "⏳ Sedang memproses...",
+        'MAINTENANCE': "🛠️ Sistem dalam maintenance",
+        'COOLDOWN': "⏳ Mohon tunggu {time} detik"
+    }
 
-    async def update_stock_display(self) -> bool:
-        """Update tampilan stock"""
-        try:
-            if not self.current_stock_message or not self.button_manager:
-                # Biarkan button manager yang membuat pesan
-                return False
+# Button IDs
+# Perbaikan untuk class BUTTON_IDS
+class BUTTON_IDS:
+    # Basic Buttons
+    CONFIRM = "confirm_{}"
+    CANCEL = "cancel_{}"
+    BUY = "buy"  # Diubah dari "buy_{}" ke "buy" untuk konsistensi
+    DONATE = "donate"
+    REFRESH = "refresh"
+    
+    # Shop Buttons
+    REGISTER = "register"
+    BALANCE = "balance"
+    WORLD_INFO = "world_info"
+    CONFIRM_PURCHASE = "confirm_purchase"
+    CANCEL_PURCHASE = "cancel_purchase"
+    HISTORY = "history"
+    
+    @classmethod
+    def get_purchase_confirmation_id(cls, product_code: str) -> str:
+        """Generate ID untuk konfirmasi pembelian"""
+        return f"{cls.CONFIRM_PURCHASE}_{product_code}"
+        
+    @classmethod
+    def get_confirm_id(cls, action_id: str) -> str:
+        """Generate ID untuk konfirmasi umum"""
+        return cls.CONFIRM.format(action_id)
+        
+    @classmethod
+    def get_cancel_id(cls, action_id: str) -> str:
+        """Generate ID untuk pembatalan umum"""
+        return cls.CANCEL.format(action_id)
+        
+# Update Intervals (in seconds)
+class UPDATE_INTERVAL:
+    LIVE_STOCK = 55.0    # Update live stock every 55 seconds
+    BUTTONS = 30.0       # Update buttons every 30 seconds
+    CACHE = 300.0        # Cache timeout 5 minutes
+    STATUS = 15.0        # Status update every 15 seconds
 
-            embed = await self.create_stock_embed()
-            await self.current_stock_message.edit(embed=embed)
-            return True
+# Cache Settings
+class CACHE_TIMEOUT:
+    SHORT = 300    # 5 minutes
+    MEDIUM = 3600  # 1 hour
+    LONG = 86400   # 24 hours
+    PERMANENT = None
 
-        except Exception as e:
-            self.logger.error(f"Error updating stock display: {e}")
-            error_embed = discord.Embed(
-                title="❌ System Error",
-                description="```diff\n- Live stock display is currently unavailable\n- System will attempt to recover automatically\n```",
-                color=COLORS['error']
-            )
-            try:
-                await self.current_stock_message.edit(embed=error_embed)
-            except:
-                pass
-            return False
+# Command Cooldowns (in seconds)
+class CommandCooldown:
+    DEFAULT = 3
+    PURCHASE = 5
+    ADMIN = 2
+    DONATE = 10
 
-    async def cleanup(self):
-        """Cleanup resources"""
-        try:
-            if self.current_stock_message:
-                embed = discord.Embed(
-                    title="🔧 Maintenance",
-                    description="```\nToko sedang dalam maintenance\nMohon tunggu sebentar\n```",
-                    color=COLORS['warning']
-                )
-                await self.current_stock_message.edit(embed=embed)
-        except Exception as e:
-            self.logger.error(f"Error in cleanup: {e}")
+# Database Settings
+class Database:
+    TIMEOUT = 5
+    MAX_CONNECTIONS = 5
+    RETRY_ATTEMPTS = 3
+    RETRY_DELAY = 1
+    BACKUP_INTERVAL = 86400  # 24 hours
 
-class LiveStockCog(commands.Cog):
-    def __init__(self, bot):
-        self.bot = bot
-        self.stock_manager = LiveStockManager(bot)
-        self.logger = logging.getLogger("LiveStockCog")
-        self.update_stock.start()
+# Paths Configuration
+class PATHS:
+    CONFIG = "config.json"
+    LOGS = "logs/"
+    DATABASE = "database.db"
+    BACKUP = "backups/"
+    TEMP = "temp/"
 
-    def cog_unload(self):
-        self.update_stock.cancel()
-        asyncio.create_task(self.stock_manager.cleanup())
+# Logging Configuration
+class LOGGING:
+    FORMAT = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    DATE_FORMAT = '%Y-%m-%d %H:%M:%S'
+    MAX_BYTES = 5 * 1024 * 1024  # 5MB
+    BACKUP_COUNT = 5
 
-    @tasks.loop(seconds=UPDATE_INTERVAL.LIVE_STOCK)
-    async def update_stock(self):
-        """Update stock display periodically"""
-        try:
-            await self.stock_manager.update_stock_display()
-        except Exception as e:
-            self.logger.error(f"Error in stock update loop: {e}")
+# Custom Exceptions
+class TransactionError(Exception):
+    """Base exception for transaction related errors"""
+    pass
 
-    @update_stock.before_loop
-    async def before_update_stock(self):
-        """Wait until bot is ready before starting the loop"""
-        await self.bot.wait_until_ready()
-        self.logger.info(f"Stock display started at: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC")
+class InsufficientBalanceError(TransactionError):
+    """Raised when user has insufficient balance"""
+    pass
 
-async def setup(bot):
-    """Setup LiveStockCog"""
-    if not hasattr(bot, 'live_stock_loaded'):
-        try:
-            await bot.add_cog(LiveStockCog(bot))
-            bot.live_stock_loaded = True
-            logging.info("LiveStockCog loaded successfully")
-        except Exception as e:
-            logging.error(f"Failed to load LiveStockCog: {e}")
-            raise
+class OutOfStockError(TransactionError):
+    """Raised when item is out of stock"""
+    pass
