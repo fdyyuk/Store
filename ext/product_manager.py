@@ -1,3 +1,10 @@
+"""
+Product Manager Service
+Author: fdyyuk
+Created at: 2025-03-07 18:04:56 UTC
+Last Modified: 2025-03-08 05:31:51 UTC
+"""
+
 import logging
 import asyncio
 from typing import Dict, List, Optional
@@ -7,10 +14,11 @@ import discord
 from discord.ext import commands
 
 from .constants import (
-    Status,          # Untuk status produk
-    TransactionError,# Untuk error handling
-    CACHE_TIMEOUT,  # Untuk cache produk
-    MESSAGES        # Untuk pesan error/success
+    Status,          # Update: menggunakan Status enum
+    TransactionError,
+    CACHE_TIMEOUT,
+    MESSAGES,
+    Stock           # Tambahan: untuk validasi stock
 )
 from database import get_connection
 from .base_handler import BaseLockHandler
@@ -38,7 +46,7 @@ class ProductManagerService(BaseLockHandler):
         """Create a new product with proper locking and cache invalidation"""
         lock = await self.acquire_lock(f"product_create_{code}")
         if not lock:
-            raise TransactionError("System is busy, please try again later")
+            raise TransactionError(MESSAGES.ERROR['TRANSACTION_FAILED'])
 
         conn = None
         try:
@@ -68,7 +76,11 @@ class ProductManagerService(BaseLockHandler):
             }
             
             # Update cache with new system
-            await self.cache_manager.set(f"product_{code}", result)
+            await self.cache_manager.set(
+                f"product_{code}", 
+                result,
+                expires_in=CACHE_TIMEOUT.get_seconds(CACHE_TIMEOUT.MEDIUM)
+            )
             await self.cache_manager.delete("all_products")  # Invalidate all products cache
             
             self.logger.info(f"Product created: {code}")
@@ -108,7 +120,11 @@ class ProductManagerService(BaseLockHandler):
             result = cursor.fetchone()
             if result:
                 product = dict(result)
-                await self.cache_manager.set(cache_key, product, expires_in=3600)  # Cache for 1 hour
+                await self.cache_manager.set(
+                    cache_key, 
+                    product,
+                    expires_in=CACHE_TIMEOUT.get_seconds(CACHE_TIMEOUT.MEDIUM)
+                )
                 return product
             return None
 
@@ -138,7 +154,11 @@ class ProductManagerService(BaseLockHandler):
             cursor.execute("SELECT * FROM products ORDER BY code")
             
             products = [dict(row) for row in cursor.fetchall()]
-            await self.cache_manager.set("all_products", products, expires_in=300)  # Cache for 5 minutes
+            await self.cache_manager.set(
+                "all_products", 
+                products,
+                expires_in=CACHE_TIMEOUT.get_seconds(CACHE_TIMEOUT.SHORT)
+            )
             return products
 
         except Exception as e:
@@ -153,7 +173,7 @@ class ProductManagerService(BaseLockHandler):
         """Add stock item with proper locking"""
         lock = await self.acquire_lock(f"stock_add_{product_code}")
         if not lock:
-            raise TransactionError("System is busy, please try again later")
+            raise TransactionError(MESSAGES.ERROR['TRANSACTION_FAILED'])
 
         conn = None
         try:
@@ -166,14 +186,19 @@ class ProductManagerService(BaseLockHandler):
                 (product_code,)
             )
             if not cursor.fetchone():
-                raise TransactionError(f"Product {product_code} not found")
+                raise TransactionError(MESSAGES.ERROR['PRODUCT_NOT_FOUND'])
+            
+            # Check stock limit
+            current_stock = await self.get_stock_count(product_code)
+            if current_stock >= Stock.MAX_STOCK:
+                raise TransactionError(f"Stock limit reached ({Stock.MAX_STOCK})")
             
             cursor.execute(
                 """
                 INSERT INTO stock (product_code, content, added_by, status)
                 VALUES (?, ?, ?, ?)
                 """,
-                (product_code, content, added_by, STATUS_AVAILABLE)
+                (product_code, content, added_by, Status.AVAILABLE.value)  # Update: menggunakan Status enum
             )
             
             conn.commit()
@@ -197,6 +222,9 @@ class ProductManagerService(BaseLockHandler):
 
     async def get_available_stock(self, product_code: str, quantity: int = 1) -> List[Dict]:
         """Get available stock with proper locking"""
+        if quantity < 1:
+            raise ValueError(MESSAGES.ERROR['INVALID_AMOUNT'])
+            
         cache_key = f"stock_{product_code}_q{quantity}"
         cached = await self.cache_manager.get(cache_key)
         if cached:
@@ -204,7 +232,7 @@ class ProductManagerService(BaseLockHandler):
 
         lock = await self.acquire_lock(f"stock_get_{product_code}")
         if not lock:
-            raise TransactionError("System is busy, please try again later")
+            raise TransactionError(MESSAGES.ERROR['TRANSACTION_FAILED'])
 
         try:
             conn = get_connection()
@@ -216,7 +244,7 @@ class ProductManagerService(BaseLockHandler):
                 WHERE product_code = ? AND status = ?
                 ORDER BY added_at ASC
                 LIMIT ?
-            """, (product_code, STATUS_AVAILABLE, quantity))
+            """, (product_code, Status.AVAILABLE.value, quantity))  # Update: menggunakan Status enum
             
             result = [{
                 'id': row['id'],
@@ -225,7 +253,11 @@ class ProductManagerService(BaseLockHandler):
             } for row in cursor.fetchall()]
 
             # Cache for a short time since this is frequently changing data
-            await self.cache_manager.set(cache_key, result, expires_in=30)
+            await self.cache_manager.set(
+                cache_key, 
+                result,
+                expires_in=CACHE_TIMEOUT.get_seconds(CACHE_TIMEOUT.SHORT)
+            )
             return result
 
         except Exception as e:
@@ -255,10 +287,14 @@ class ProductManagerService(BaseLockHandler):
                 SELECT COUNT(*) as count 
                 FROM stock 
                 WHERE product_code = ? AND status = ?
-            """, (product_code, STATUS_AVAILABLE))
+            """, (product_code, Status.AVAILABLE.value))  # Update: menggunakan Status enum
             
             result = cursor.fetchone()['count']
-            await self.cache_manager.set(cache_key, result, expires_in=30)  # Cache for 30 seconds
+            await self.cache_manager.set(
+                cache_key, 
+                result,
+                expires_in=CACHE_TIMEOUT.get_seconds(CACHE_TIMEOUT.SHORT)
+            )
             return result
 
         except Exception as e:
@@ -269,11 +305,19 @@ class ProductManagerService(BaseLockHandler):
                 conn.close()
             self.release_lock(f"stock_count_{product_code}")
 
-    async def update_stock_status(self, stock_id: int, status: str, buyer_id: str = None) -> bool:
+    async def update_stock_status(
+        self, 
+        stock_id: int, 
+        status: str, 
+        buyer_id: str = None
+    ) -> bool:
         """Update stock status with proper locking"""
+        if status not in [s.value for s in Status]:
+            raise ValueError(f"Invalid status: {status}")
+            
         lock = await self.acquire_lock(f"stock_update_{stock_id}")
         if not lock:
-            raise TransactionError("System is busy, please try again later")
+            raise TransactionError(MESSAGES.ERROR['TRANSACTION_FAILED'])
 
         conn = None
         try:
@@ -284,7 +328,7 @@ class ProductManagerService(BaseLockHandler):
             cursor.execute("SELECT product_code FROM stock WHERE id = ?", (stock_id,))
             product_result = cursor.fetchone()
             if not product_result:
-                raise TransactionError(f"Stock item {stock_id} not found")
+                raise TransactionError(MESSAGES.ERROR['PRODUCT_NOT_FOUND'])
             
             product_code = product_result['product_code']
             
@@ -308,7 +352,7 @@ class ProductManagerService(BaseLockHandler):
             await self.cache_manager.delete(f"stock_count_{product_code}")
             await self.cache_manager.delete(f"stock_{product_code}")
             # Also invalidate any quantity specific caches
-            for i in range(1, 101):  # Reasonable range for quantities
+            for i in range(1, Stock.MAX_ITEMS + 1):
                 await self.cache_manager.delete(f"stock_{product_code}_q{i}")
             
             self.logger.info(f"Stock {stock_id} status updated to {status}")
@@ -344,7 +388,11 @@ class ProductManagerService(BaseLockHandler):
             
             if result:
                 info = dict(result)
-                await self.cache_manager.set("world_info", info, expires_in=300)  # Cache for 5 minutes
+                await self.cache_manager.set(
+                    "world_info", 
+                    info,
+                    expires_in=CACHE_TIMEOUT.get_seconds(CACHE_TIMEOUT.SHORT)
+                )
                 return info
             return None
 
@@ -360,7 +408,7 @@ class ProductManagerService(BaseLockHandler):
         """Update world info with proper locking"""
         lock = await self.acquire_lock("world_info_update")
         if not lock:
-            raise TransactionError("System is busy, please try again later")
+            raise TransactionError(MESSAGES.ERROR['TRANSACTION_FAILED'])
 
         conn = None
         try:
