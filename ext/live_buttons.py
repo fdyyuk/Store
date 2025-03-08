@@ -2,7 +2,14 @@
 Live Buttons Manager with Shop Integration
 Author: fdyyuk
 Created at: 2025-03-07 22:35:08 UTC
-Last Modified: 2025-03-08 08:54:03 UTC
+Last Modified: 2025-03-08 16:13:14 UTC
+
+Dependencies:
+- ext.product_manager: For product operations
+- ext.balance_manager: For balance operations
+- ext.trx: For transaction operations
+- ext.admin_service: For maintenance mode
+- ext.constants: For configuration and responses
 """
 
 import logging
@@ -21,15 +28,18 @@ from .constants import (
     CACHE_TIMEOUT,
     Balance,
     TransactionType,
-    CURRENCY_RATES
+    CURRENCY_RATES,
+    Status,
+    Stock
 )
 
 from .base_handler import BaseLockHandler
 from .cache_manager import CacheManager
 from .product_manager import ProductManagerService
 from .balance_manager import BalanceManagerService
+from .trx import TransactionManager
+from .admin_service import AdminService
 
-# Sisanya tetap sama...
 class ShopError(Exception):
     """Base exception for shop errors"""
     pass
@@ -47,10 +57,11 @@ class TransactionError(ShopError):
     pass
 
 class ProductSelect(Select):
-    def __init__(self, products: List[Dict], balance_manager, product_manager):
+    def __init__(self, products: List[Dict], balance_service, product_service, trx_manager):
         self.products_cache = {p['code']: p for p in products}
-        self.balance_manager = balance_manager
-        self.product_manager = product_manager
+        self.balance_service = balance_service
+        self.product_service = product_service
+        self.trx_manager = trx_manager
         
         options = [
             discord.SelectOption(
@@ -71,18 +82,27 @@ class ProductSelect(Select):
         await interaction.response.defer(ephemeral=True)
         try:
             selected_code = self.values[0]
-            selected_product = self.products_cache.get(selected_code)
-            
-            if not selected_product:
-                raise ValueError(MESSAGES.ERROR['PRODUCT_NOT_FOUND'])
+            product_response = await self.product_service.get_product(selected_code)
+            if not product_response.success:
+                raise ValueError(product_response.error)
+                
+            selected_product = product_response.data
             
             # Verifikasi stock realtime
-            current_stock = await self.product_manager.get_stock_count(selected_code)
+            stock_response = await self.product_service.get_stock_count(selected_code)
+            if not stock_response.success:
+                raise ValueError(stock_response.error)
+                
+            current_stock = stock_response.data
             if current_stock <= 0:
                 raise ValueError(MESSAGES.ERROR['OUT_OF_STOCK'])
             
             # Verifikasi user balance
-            growid = await self.balance_manager.get_growid(str(interaction.user.id))
+            growid_response = await self.balance_service.get_growid(str(interaction.user.id))
+            if not growid_response.success:
+                raise ValueError(growid_response.error)
+            
+            growid = growid_response.data
             if not growid:
                 raise ValueError(MESSAGES.ERROR['NOT_REGISTERED'])
                 
@@ -117,21 +137,20 @@ class RegisterModal(Modal):
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         try:
-            balance_manager = BalanceManagerService(interaction.client)
+            balance_service = BalanceManagerService(interaction.client)
             
             growid = str(self.growid.value).strip().upper()
             if not growid or len(growid) < 3:
                 raise ValueError(MESSAGES.ERROR['INVALID_GROWID'])
             
-            # Cek duplikat GrowID
-            existing_user = await balance_manager.get_user_by_growid(growid)
-            if existing_user:
-                raise ValueError(MESSAGES.ERROR['GROWID_EXISTS'])
-                
-            await balance_manager.register_user(
+            # Register user with proper response handling
+            register_response = await balance_service.register_user(
                 str(interaction.user.id),
                 growid
             )
+            
+            if not register_response.success:
+                raise ValueError(register_response.error)
             
             success_embed = discord.Embed(
                 title="✅ Berhasil",
@@ -159,8 +178,11 @@ class ShopView(View):
     def __init__(self, bot):
         super().__init__(timeout=None)
         self.bot = bot
-        self.balance_manager = BalanceManagerService(bot)
-        self.product_manager = ProductManagerService(bot)
+        # Initialize services
+        self.balance_service = BalanceManagerService(bot)
+        self.product_service = ProductManagerService(bot)
+        self.trx_manager = TransactionManager(bot)
+        self.admin_service = AdminService(bot)
         self.cache_manager = CacheManager()
         self.logger = logging.getLogger("ShopView")
         self._interaction_locks = {}
@@ -214,12 +236,16 @@ class ShopView(View):
             return
 
         try:
-            existing_growid = await self.balance_manager.get_growid(str(interaction.user.id))
-            if existing_growid:
+            # Check maintenance mode
+            if await self.admin_service.is_maintenance_mode():
+                raise ValueError(MESSAGES.INFO['MAINTENANCE'])
+
+            growid_response = await self.balance_service.get_growid(str(interaction.user.id))
+            if growid_response.success and growid_response.data:
                 await interaction.response.send_message(
                     embed=discord.Embed(
                         title="❌ Sudah Terdaftar",
-                        description=f"Anda sudah terdaftar dengan GrowID: `{existing_growid}`",
+                        description=f"Anda sudah terdaftar dengan GrowID: `{growid_response.data}`",
                         color=COLORS.ERROR
                     ),
                     ephemeral=True
@@ -229,6 +255,16 @@ class ShopView(View):
             modal = RegisterModal()
             await interaction.response.send_modal(modal)
 
+        except ValueError as e:
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    embed=discord.Embed(
+                        title="❌ Error",
+                        description=str(e),
+                        color=COLORS.ERROR
+                    ),
+                    ephemeral=True
+                )
         except Exception as e:
             self.logger.error(f"Error in register callback: {e}")
             if not interaction.response.is_done():
@@ -263,22 +299,27 @@ class ShopView(View):
         try:
             await interaction.response.defer(ephemeral=True)
             
-            growid = await self.balance_manager.get_growid(str(interaction.user.id))
+            # Check maintenance mode
+            if await self.admin_service.is_maintenance_mode():
+                raise ValueError(MESSAGES.INFO['MAINTENANCE'])
+            
+            growid_response = await self.balance_service.get_growid(str(interaction.user.id))
+            if not growid_response.success:
+                raise ValueError(growid_response.error)
+                
+            growid = growid_response.data
             if not growid:
                 raise ValueError(MESSAGES.ERROR['NOT_REGISTERED'])
 
-            balance = await self.balance_manager.get_balance(growid)
-            if not balance:
-                raise ValueError(MESSAGES.ERROR['BALANCE_NOT_FOUND'])
+            balance_response = await self.balance_service.get_balance(growid)
+            if not balance_response.success:
+                raise ValueError(balance_response.error)
+                
+            balance = balance_response.data
 
             # Format balance untuk display
             balance_wls = balance.total_wl()
-            if balance_wls >= CURRENCY_RATES.RATES['BGL']:
-                display_balance = f"{balance_wls/CURRENCY_RATES.RATES['BGL']:.1f} BGL"
-            elif balance_wls >= CURRENCY_RATES.RATES['DL']:
-                display_balance = f"{balance_wls/CURRENCY_RATES.RATES['DL']:.0f} DL"
-            else:
-                display_balance = f"{balance_wls} WL"
+            display_balance = self._format_currency(balance_wls)
 
             embed = discord.Embed(
                 title="💰 Informasi Saldo",
@@ -293,8 +334,9 @@ class ShopView(View):
             )
             
             # Get transaction history
-            transactions = await self.balance_manager.get_transaction_history(growid, limit=3)
-            if transactions:
+            trx_response = await self.trx_manager.get_transaction_history(growid, limit=3)
+            if trx_response.success and trx_response.data:
+                transactions = trx_response.data
                 trx_details = []
                 for trx in transactions:
                     old_balance = Balance.from_string(trx['old_balance'])
@@ -335,6 +377,17 @@ class ShopView(View):
         finally:
             self._release_interaction_lock(str(interaction.id))
 
+    def _format_currency(self, amount: int) -> str:
+        """Format currency amount with proper denominations"""
+        try:
+            if amount >= CURRENCY_RATES['BGL']:
+                return f"{amount/CURRENCY_RATES['BGL']:.1f} BGL"
+            elif amount >= CURRENCY_RATES['DL']:
+                return f"{amount/CURRENCY_RATES['DL']:.0f} DL"
+            return f"{int(amount)} WL"
+        except Exception:
+            return "Invalid Amount"
+
     @discord.ui.button(
         style=discord.ButtonStyle.secondary,
         label="🌎 World Info",
@@ -355,12 +408,20 @@ class ShopView(View):
         try:
             await interaction.response.defer(ephemeral=True)
             
+            # Check maintenance mode
+            if await self.admin_service.is_maintenance_mode():
+                raise ValueError(MESSAGES.INFO['MAINTENANCE'])
+            
             # Try to get from cache first
             cache_key = 'world_info'
             world_info = await self.cache_manager.get(cache_key)
             
             if not world_info:
-                world_info = await self.product_manager.get_world_info()
+                world_response = await self.product_service.get_world_info()
+                if not world_response.success:
+                    raise ValueError(world_response.error)
+                    
+                world_info = world_response.data
                 if world_info:
                     await self.cache_manager.set(
                         cache_key,
@@ -398,6 +459,13 @@ class ShopView(View):
             
             await interaction.followup.send(embed=embed, ephemeral=True)
 
+        except ValueError as e:
+            error_embed = discord.Embed(
+                title="❌ Error",
+                description=str(e),
+                color=COLORS.ERROR
+            )
+            await interaction.followup.send(embed=error_embed, ephemeral=True)
         except Exception as e:
             self.logger.error(f"Error in world info callback: {e}")
             error_embed = discord.Embed(
@@ -429,30 +497,31 @@ class ShopView(View):
         try:
             await interaction.response.defer(ephemeral=True)
             
-            growid = await self.balance_manager.get_growid(str(interaction.user.id))
+            # Check maintenance mode
+            if await self.admin_service.is_maintenance_mode():
+                raise ValueError(MESSAGES.INFO['MAINTENANCE'])
+            
+            growid_response = await self.balance_service.get_growid(str(interaction.user.id))
+            if not growid_response.success:
+                raise ValueError(growid_response.error)
+                
+            growid = growid_response.data
             if not growid:
                 raise ValueError(MESSAGES.ERROR['NOT_REGISTERED'])
 
-            # Get products from cache first
-            cache_key = 'available_products'
-            available_products = await self.cache_manager.get(cache_key)
+            # Get products with proper response handling
+            product_response = await self.product_service.get_all_products()
+            if not product_response.success:
+                raise ValueError(product_response.error)
+                
+            products = product_response.data
+            available_products = []
             
-            if not available_products:
-                products = await self.product_manager.get_all_products()
-                available_products = []
-                
-                for product in products:
-                    stock_count = await self.product_manager.get_stock_count(product['code'])
-                    if stock_count > 0:
-                        product['stock'] = stock_count
-                        available_products.append(product)
-                
-                if available_products:
-                    await self.cache_manager.set(
-                        cache_key,
-                        available_products,
-                        expires_in=CACHE_TIMEOUT.get_seconds(CACHE_TIMEOUT.SHORT)
-                    )
+            for product in products:
+                stock_response = await self.product_service.get_stock_count(product['code'])
+                if stock_response.success and stock_response.data > 0:
+                    product['stock'] = stock_response.data
+                    available_products.append(product)
 
             if not available_products:
                 raise ValueError(MESSAGES.ERROR['OUT_OF_STOCK'])
@@ -468,14 +537,8 @@ class ShopView(View):
             )
 
             for product in available_products:
-                # Format harga dengan currency rates
                 price = float(product['price'])
-                if price >= CURRENCY_RATES.RATES['BGL']:
-                    price_display = f"{price/CURRENCY_RATES.RATES['BGL']:.1f} BGL"
-                elif price >= CURRENCY_RATES.RATES['DL']:
-                    price_display = f"{price/CURRENCY_RATES.RATES['DL']:.0f} DL"
-                else:
-                    price_display = f"{int(price)} WL"
+                price_display = self._format_currency(price)
                     
                 embed.add_field(
                     name=f"{product['name']} [{product['code']}]",
@@ -492,8 +555,9 @@ class ShopView(View):
             view = View(timeout=300)
             view.add_item(ProductSelect(
                 available_products,
-                self.balance_manager,
-                self.product_manager
+                self.balance_service,
+                self.product_service,
+                self.trx_manager
             ))
             
             await interaction.followup.send(embed=embed, view=view, ephemeral=True)
@@ -536,11 +600,23 @@ class ShopView(View):
         try:
             await interaction.response.defer(ephemeral=True)
             
-            growid = await self.balance_manager.get_growid(str(interaction.user.id))
+            # Check maintenance mode
+            if await self.admin_service.is_maintenance_mode():
+                raise ValueError(MESSAGES.INFO['MAINTENANCE'])
+            
+            growid_response = await self.balance_service.get_growid(str(interaction.user.id))
+            if not growid_response.success:
+                raise ValueError(growid_response.error)
+                
+            growid = growid_response.data
             if not growid:
                 raise ValueError(MESSAGES.ERROR['NOT_REGISTERED'])
 
-            transactions = await self.balance_manager.get_transaction_history(growid, limit=5)
+            trx_response = await self.trx_manager.get_transaction_history(growid, limit=5)
+            if not trx_response.success:
+                raise ValueError(trx_response.error)
+                
+            transactions = trx_response.data
             if not transactions:
                 raise ValueError(MESSAGES.ERROR['NO_HISTORY'])
 
@@ -555,7 +631,9 @@ class ShopView(View):
                 emoji_map = {
                     TransactionType.DEPOSIT.value: "💰",
                     TransactionType.PURCHASE.value: "🛒",
-                    TransactionType.WITHDRAWAL.value: "💸"
+                    TransactionType.WITHDRAWAL.value: "💸",
+                    TransactionType.ADMIN_ADD.value: "⚡",
+                    TransactionType.ADMIN_REMOVE.value: "🔸"
                 }
                 emoji = emoji_map.get(trx['type'], "❓")
                 
@@ -568,14 +646,8 @@ class ShopView(View):
                 balance_change = new_balance.total_wl() - old_balance.total_wl()
                 
                 # Format balance change
-                if balance_change >= CURRENCY_RATES.RATES['BGL']:
-                    change_display = f"{balance_change/CURRENCY_RATES.RATES['BGL']:.1f} BGL"
-                elif balance_change >= CURRENCY_RATES.RATES['DL']:
-                    change_display = f"{balance_change/CURRENCY_RATES.RATES['DL']:.0f} DL"
-                else:
-                    change_display = f"{balance_change} WL"
-                
-                change_prefix = "+" if balance_change >= 0 else ""
+                change_display = self._format_currency(abs(balance_change))
+                change_prefix = "+" if balance_change >= 0 else "-"
                 
                 embed.add_field(
                     name=f"{emoji} Transaksi #{i}",
@@ -614,8 +686,6 @@ class ShopView(View):
         finally:
             self._release_interaction_lock(str(interaction.id))
 
-# [LiveButtonManager dan LiveButtonsCog tetap sama...]
-
 class LiveButtonManager(BaseLockHandler):
     _instance = None
     _instance_lock = asyncio.Lock()
@@ -632,6 +702,7 @@ class LiveButtonManager(BaseLockHandler):
             self.bot = bot
             self.logger = logging.getLogger("LiveButtonManager")
             self.cache_manager = CacheManager()
+            self.admin_service = AdminService(bot)
             self.stock_channel_id = int(self.bot.config.get('id_live_stock', 0))
             self.current_message: Optional[discord.Message] = None
             self.stock_manager = None
@@ -670,6 +741,9 @@ class LiveButtonManager(BaseLockHandler):
             return None
 
         try:
+            # Check maintenance mode first
+            is_maintenance = await self.admin_service.is_maintenance_mode()
+            
             # Coba dapatkan message dari cache
             message_id = await self.cache_manager.get("live_stock_message_id")
             if message_id:
@@ -689,22 +763,25 @@ class LiveButtonManager(BaseLockHandler):
             await self.ensure_stock_manager()
 
             # Buat pesan baru dengan embed dan view
-            if self.stock_manager:
-                embed = await self.stock_manager.create_stock_embed()
-            else:
+            if is_maintenance:
                 embed = discord.Embed(
-                    title="🏪 Live Stock",
-                    description=(
-                        "```yml\n"
-                        "System is initializing...\n"
-                        "Please wait a moment or refresh the page\n"
-                        "```"
-                    ),
+                    title="🔧 Maintenance Mode",
+                    description=MESSAGES.INFO['MAINTENANCE'],
                     color=COLORS.WARNING
                 )
-                
-            view = ShopView(self.bot)
-            message = await channel.send(embed=embed, view=view)
+                message = await channel.send(embed=embed)
+            else:
+                if self.stock_manager:
+                    embed = await self.stock_manager.create_stock_embed()
+                else:
+                    embed = discord.Embed(
+                        title="🏪 Live Stock",
+                        description=MESSAGES.INFO['INITIALIZING'],
+                        color=COLORS.WARNING
+                    )
+                    
+                view = ShopView(self.bot)
+                message = await channel.send(embed=embed, view=view)
             
             self.current_message = message
             if self.stock_manager:
@@ -732,6 +809,17 @@ class LiveButtonManager(BaseLockHandler):
             if not self.current_message:
                 return False
 
+            # Check maintenance mode
+            is_maintenance = await self.admin_service.is_maintenance_mode()
+            if is_maintenance:
+                embed = discord.Embed(
+                    title="🔧 Maintenance Mode",
+                    description=MESSAGES.INFO['MAINTENANCE'],
+                    color=COLORS.WARNING
+                )
+                await self.current_message.edit(embed=embed, view=None)
+                return True
+
             if self.stock_manager:
                 await self.stock_manager.update_stock_display()
             
@@ -751,6 +839,17 @@ class LiveButtonManager(BaseLockHandler):
                 
             if not self.current_message:
                 return False
+
+            # Check maintenance mode
+            is_maintenance = await self.admin_service.is_maintenance_mode()
+            if is_maintenance:
+                embed = discord.Embed(
+                    title="🔧 Maintenance Mode",
+                    description=MESSAGES.INFO['MAINTENANCE'],
+                    color=COLORS.WARNING
+                )
+                await self.current_message.edit(embed=embed, view=None)
+                return True
 
             view = ShopView(self.bot)
             await self.current_message.edit(view=view)
@@ -774,6 +873,18 @@ class LiveButtonManager(BaseLockHandler):
                     color=COLORS.WARNING
                 )
                 await self.current_message.edit(embed=embed, view=None)
+                
+            # Clear caches
+            patterns = [
+                'live_stock_message_id',
+                'world_info',
+                'available_products'
+            ]
+            for pattern in patterns:
+                await self.cache_manager.delete_pattern(pattern)
+                
+            self.logger.info("LiveButtonManager cleanup completed")
+            
         except Exception as e:
             self.logger.error(f"Error in cleanup: {e}")
 
@@ -786,6 +897,7 @@ class LiveButtonsCog(commands.Cog):
         self.check_display.start()
 
     def cog_unload(self):
+        """Cleanup when cog is unloaded"""
         self.check_display.cancel()
         asyncio.create_task(self.button_manager.cleanup())
         self.logger.info("LiveButtonsCog unloaded")
@@ -834,19 +946,37 @@ class LiveButtonsCog(commands.Cog):
             await self.button_manager.set_stock_manager(self.stock_manager)
 
 async def setup(bot):
-    """Setup LiveButtonsCog"""
+    """Setup LiveButtonsCog dengan proper error handling"""
     if not hasattr(bot, 'live_buttons_loaded'):
-        # Pastikan LiveStockCog sudah di-load
-        stock_cog = bot.get_cog('LiveStockCog')
-        if not stock_cog:
-            logging.warning("LiveStockCog not found, attempting to load...")
-            try:
-                await bot.load_extension('ext.live_stock')
-                await asyncio.sleep(1)  # Beri waktu untuk inisialisasi
-            except Exception as e:
-                logging.error(f"Failed to load LiveStockCog: {e}")
-                return
+        try:
+            # Verify all required dependencies
+            required_dependencies = [
+                'product_manager_loaded',
+                'balance_manager_loaded',
+                'transaction_manager_loaded',
+                'admin_service_loaded',
+                'live_stock_loaded'
+            ]
+            
+            for dependency in required_dependencies:
+                if not hasattr(bot, dependency):
+                    raise Exception(MESSAGES.ERROR['MISSING_DEPENDENCY'].format(dependency))
 
-        await bot.add_cog(LiveButtonsCog(bot))
-        bot.live_buttons_loaded = True
-        logging.info("LiveButtonsCog loaded successfully")
+            # Pastikan LiveStockCog sudah di-load
+            stock_cog = bot.get_cog('LiveStockCog')
+            if not stock_cog:
+                logging.warning("LiveStockCog not found, attempting to load...")
+                try:
+                    await bot.load_extension('ext.live_stock')
+                    await asyncio.sleep(1)  # Beri waktu untuk inisialisasi
+                except Exception as e:
+                    logging.error(f"Failed to load LiveStockCog: {e}")
+                    raise
+
+            await bot.add_cog(LiveButtonsCog(bot))
+            bot.live_buttons_loaded = True
+            logging.info(MESSAGES.SUCCESS['COG_LOADED'].format('LiveButtons'))
+            
+        except Exception as e:
+            logging.error(f"Failed to load LiveButtonsCog: {e}")
+            raise
