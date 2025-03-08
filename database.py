@@ -1,3 +1,9 @@
+"""
+Database Manager
+Author: fdyyuk
+Created at: 2025-03-08 10:26:37 UTC
+"""
+
 import sqlite3
 import logging
 import time
@@ -199,14 +205,6 @@ def setup_database():
                 )
             """)
 
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS cache_table (
-                    key TEXT PRIMARY KEY,
-                    value TEXT NOT NULL,
-                    expires_at TIMESTAMP NOT NULL,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
             # 2. Statistics System Tables
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS activity_logs (
@@ -228,35 +226,7 @@ def setup_database():
                 )
             """)
 
-            # 3. Reputation System Tables - Dibuat lebih awal karena dependencies
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS reputation_settings (
-                    guild_id TEXT PRIMARY KEY,
-                    cooldown INTEGER DEFAULT 43200,
-                    max_daily INTEGER DEFAULT 3,
-                    min_message_age INTEGER DEFAULT 1800,
-                    required_role TEXT,
-                    blacklisted_roles TEXT,
-                    log_channel TEXT,
-                    auto_roles TEXT,
-                    stack_roles BOOLEAN DEFAULT FALSE,
-                    decay_enabled BOOLEAN DEFAULT FALSE,
-                    decay_days INTEGER DEFAULT 30
-                )
-            """)
-            
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS user_reputation (
-                    user_id TEXT,
-                    guild_id TEXT,
-                    reputation INTEGER DEFAULT 0,
-                    total_given INTEGER DEFAULT 0,
-                    total_received INTEGER DEFAULT 0,
-                    last_given DATETIME,
-                    last_received DATETIME,
-                    PRIMARY KEY (user_id, guild_id)
-                )
-            """)
+            # 3. Cache System Table
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS cache (
                     key TEXT PRIMARY KEY,
@@ -264,26 +234,6 @@ def setup_database():
                     expires_at REAL,
                     created_at REAL DEFAULT (strftime('%s', 'now')),
                     updated_at REAL DEFAULT (strftime('%s', 'now'))
-                """)
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS reputation_history (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    guild_id TEXT NOT NULL,
-                    giver_id TEXT NOT NULL,
-                    receiver_id TEXT NOT NULL,
-                    message_id TEXT,
-                    reason TEXT,
-                    amount INTEGER DEFAULT 1,
-                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-            
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS reputation_roles (
-                    guild_id TEXT,
-                    reputation INTEGER,
-                    role_id TEXT,
-                    PRIMARY KEY (guild_id, reputation)
                 )
             """)
 
@@ -401,7 +351,7 @@ def setup_database():
                     allow_everyone BOOLEAN DEFAULT FALSE
                 )
             """)
-            # Menjadi:
+
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS reminders (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -417,7 +367,7 @@ def setup_database():
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
             """)
-            
+
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS reminder_templates (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -430,6 +380,7 @@ def setup_database():
                     UNIQUE(guild_id, name)
                 )
             """)
+
             # 8. Welcome System Tables
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS welcome_settings (
@@ -500,7 +451,7 @@ def setup_database():
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
-            
+
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS giveaway_entries (
                     giveaway_id INTEGER,
@@ -511,13 +462,12 @@ def setup_database():
                     FOREIGN KEY (giveaway_id) REFERENCES giveaways (id) ON DELETE CASCADE
                 )
             """)
-            
+
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS giveaway_settings (
                     guild_id TEXT PRIMARY KEY,
                     manager_role TEXT,
                     default_duration INTEGER DEFAULT 86400,
-                    minimum_duration INTEGER DEFAULT 300,
                     maximum_duration INTEGER DEFAULT 2592000,
                     maximum_winners INTEGER DEFAULT 20,
                     bypass_roles TEXT,
@@ -528,6 +478,9 @@ def setup_database():
 
             # Create indexes for optimization
             indexes = [
+                # Cache System Indexes
+                ("idx_cache_expiry", "cache(expires_at)"),
+                
                 # Admin System Indexes
                 ("idx_user_growid_discord", "user_growid(discord_id)"),
                 ("idx_user_growid_growid", "user_growid(growid)"),
@@ -542,8 +495,7 @@ def setup_database():
                 ("idx_user_activity_discord", "user_activity(discord_id)"),
                 ("idx_user_activity_type", "user_activity(activity_type)"),
                 ("idx_role_permissions_role", "role_permissions(role_id)"),
-                ("idx_cache_expires", "cache_table(expires_at)"),
-                ("idx_cache_expiry ON cache(expires_at)"),
+
                 # Stats System Indexes
                 ("idx_activity_logs_guild", "activity_logs(guild_id)"),
                 ("idx_activity_logs_user", "activity_logs(user_id)"),
@@ -552,13 +504,6 @@ def setup_database():
                 ("idx_member_history_guild", "member_history(guild_id)"),
                 ("idx_member_history_timestamp", "member_history(timestamp)"),
 
-                # Reputation System Indexes
-                ("idx_reputation_user", "user_reputation(user_id)"),
-                ("idx_reputation_guild", "user_reputation(guild_id)"),
-                ("idx_rep_history_guild", "reputation_history(guild_id)"),
-                ("idx_rep_roles_guild", "reputation_roles(guild_id)"),
-                ("idx_rep_settings_guild", "reputation_settings(guild_id)"),
-    
                 # Poll System Indexes
                 ("idx_polls_guild", "polls(guild_id)"),
                 ("idx_polls_channel", "polls(channel_id)"),
@@ -662,10 +607,13 @@ def verify_database():
 
         # Check all tables exist
         tables = [
+            # Cache System Tables
+            'cache',
+            
             # Admin System Tables
             'users', 'user_growid', 'products', 'stock', 'transactions',
             'world_info', 'bot_settings', 'blacklist', 'admin_logs',
-            'role_permissions', 'user_activity', 'cache_table',
+            'role_permissions', 'user_activity',
             
             # Stats System Tables
             'activity_logs', 'member_history',
@@ -676,9 +624,6 @@ def verify_database():
             # Level System Tables
             'levels', 'level_rewards', 'level_settings',
             
-            # Reputation System Tables
-            'user_reputation', 'reputation_history', 'reputation_roles', 'reputation_settings',
-            
             # Music System Tables
             'music_settings', 'playlists', 'playlist_songs',
             
@@ -687,9 +632,6 @@ def verify_database():
             
             # AutoMod System Tables
             'automod_settings', 'warnings',
-            
-            # Ticket System Tables
-            'ticket_settings', 'tickets', 'ticket_responses',
             
             # Reminder System Tables
             'reminder_settings', 'reminders', 'reminder_templates',
@@ -714,7 +656,7 @@ def verify_database():
             raise sqlite3.Error("Database integrity check failed")
 
         # Clean expired cache entries
-        cursor.execute("DELETE FROM cache_table WHERE expires_at < CURRENT_TIMESTAMP")
+        cursor.execute("DELETE FROM cache WHERE expires_at < strftime('%s', 'now')")
         
         # Vacuum database to optimize storage
         cursor.execute("VACUUM")
