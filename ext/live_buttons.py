@@ -642,6 +642,21 @@ class LiveButtonManager(BaseLockHandler):
         self.stock_manager = stock_manager
         # Set referensi balik ke stock manager
         await stock_manager.set_button_manager(self)
+        # Force update setelah set stock manager
+        await self.force_update()
+
+    async def ensure_stock_manager(self, max_retries=5) -> bool:
+        """Memastikan stock manager tersedia"""
+        retries = 0
+        while not self.stock_manager and retries < max_retries:
+            self.logger.info(f"Waiting for StockManager... (attempt {retries + 1}/{max_retries})")
+            await asyncio.sleep(1)
+            retries += 1
+            
+        if not self.stock_manager:
+            self.logger.error("StockManager not available after max retries")
+            return False
+        return True
 
     async def get_or_create_message(self) -> Optional[discord.Message]:
         """Create or get existing message with both stock display and buttons"""
@@ -655,6 +670,7 @@ class LiveButtonManager(BaseLockHandler):
             return None
 
         try:
+            # Coba dapatkan message dari cache
             message_id = await self.cache_manager.get("live_stock_message_id")
             if message_id:
                 try:
@@ -665,21 +681,36 @@ class LiveButtonManager(BaseLockHandler):
                     return message
                 except discord.NotFound:
                     await self.cache_manager.delete("live_stock_message_id")
+                    self.logger.warning("Cached message not found, creating new one...")
                 except Exception as e:
                     self.logger.error(f"Error mengambil pesan: {e}")
 
+            # Tunggu stock manager jika belum tersedia
+            await self.ensure_stock_manager()
+
             # Buat pesan baru dengan embed dan view
-            embed = await self.stock_manager.create_stock_embed() if self.stock_manager else discord.Embed(
-                title="🏪 Live Stock",
-                description="Loading...",
-                color=COLORS.INFO
-            )
+            if self.stock_manager:
+                embed = await self.stock_manager.create_stock_embed()
+            else:
+                embed = discord.Embed(
+                    title="🏪 Live Stock",
+                    description=(
+                        "```yml\n"
+                        "System is initializing...\n"
+                        "Please wait a moment or refresh the page\n"
+                        "```"
+                    ),
+                    color=COLORS.WARNING
+                )
+                
             view = ShopView(self.bot)
             message = await channel.send(embed=embed, view=view)
             
             self.current_message = message
             if self.stock_manager:
                 self.stock_manager.current_stock_message = message
+                # Trigger immediate update
+                await self.stock_manager.update_stock_display()
                 
             await self.cache_manager.set(
                 "live_stock_message_id",
@@ -691,6 +722,26 @@ class LiveButtonManager(BaseLockHandler):
         except Exception as e:
             self.logger.error(f"Error in get_or_create_message: {e}")
             return None
+
+    async def force_update(self) -> bool:
+        """Force update stock display and buttons"""
+        try:
+            if not self.current_message:
+                self.current_message = await self.get_or_create_message()
+                
+            if not self.current_message:
+                return False
+
+            if self.stock_manager:
+                await self.stock_manager.update_stock_display()
+            
+            view = ShopView(self.bot)
+            await self.current_message.edit(view=view)
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Error in force update: {e}")
+            return False
 
     async def update_buttons(self) -> bool:
         """Update buttons display"""
@@ -705,6 +756,10 @@ class LiveButtonManager(BaseLockHandler):
             await self.current_message.edit(view=view)
             return True
 
+        except discord.NotFound:
+            self.logger.warning("Message not found, attempting recovery...")
+            self.current_message = None
+            return await self.force_update()
         except Exception as e:
             self.logger.error(f"Error updating buttons: {e}")
             return False
@@ -728,10 +783,46 @@ class LiveButtonsCog(commands.Cog):
         self.button_manager = LiveButtonManager(bot)
         self.stock_manager = None
         self.logger = logging.getLogger("LiveButtonsCog")
+        self.check_display.start()
+
+    def cog_unload(self):
+        self.check_display.cancel()
+        asyncio.create_task(self.button_manager.cleanup())
+        self.logger.info("LiveButtonsCog unloaded")
+
+    @tasks.loop(minutes=5)
+    async def check_display(self):
+        """Periodically check if display is working"""
+        try:
+            if not self.button_manager.current_message:
+                self.logger.warning("Stock message not found, attempting recovery...")
+                await self.button_manager.force_update()
+        except Exception as e:
+            self.logger.error(f"Error in display check: {e}")
+
+    @check_display.before_loop
+    async def before_check_display(self):
+        """Wait until bot is ready before starting the loop"""
+        await self.bot.wait_until_ready()
 
     @commands.Cog.listener()
     async def on_ready(self):
         """Setup buttons when bot is ready"""
+        retries = 0
+        max_retries = 5
+        while not self.stock_manager and retries < max_retries:
+            self.logger.info(f"Attempting to get StockManager (attempt {retries + 1}/{max_retries})")
+            stock_cog = self.bot.get_cog('LiveStockCog')
+            if stock_cog:
+                self.stock_manager = stock_cog.stock_manager
+                await self.button_manager.set_stock_manager(self.stock_manager)
+                break
+            retries += 1
+            await asyncio.sleep(1)
+        
+        if not self.stock_manager:
+            self.logger.error("Failed to get StockManager after max retries")
+        
         await self.button_manager.update_buttons()
 
     async def cog_load(self):
@@ -742,13 +833,20 @@ class LiveButtonsCog(commands.Cog):
             self.stock_manager = stock_cog.stock_manager
             await self.button_manager.set_stock_manager(self.stock_manager)
 
-    async def cog_unload(self):
-        await self.button_manager.cleanup()
-        self.logger.info("LiveButtonsCog unloaded")
-
 async def setup(bot):
     """Setup LiveButtonsCog"""
     if not hasattr(bot, 'live_buttons_loaded'):
+        # Pastikan LiveStockCog sudah di-load
+        stock_cog = bot.get_cog('LiveStockCog')
+        if not stock_cog:
+            logging.warning("LiveStockCog not found, attempting to load...")
+            try:
+                await bot.load_extension('ext.live_stock')
+                await asyncio.sleep(1)  # Beri waktu untuk inisialisasi
+            except Exception as e:
+                logging.error(f"Failed to load LiveStockCog: {e}")
+                return
+
         await bot.add_cog(LiveButtonsCog(bot))
         bot.live_buttons_loaded = True
         logging.info("LiveButtonsCog loaded successfully")
