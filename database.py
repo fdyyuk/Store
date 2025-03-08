@@ -257,7 +257,14 @@ def setup_database():
                     PRIMARY KEY (user_id, guild_id)
                 )
             """)
-            
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS cache (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    expires_at REAL,
+                    created_at REAL DEFAULT (strftime('%s', 'now')),
+                    updated_at REAL DEFAULT (strftime('%s', 'now'))
+                """)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS reputation_history (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -536,7 +543,7 @@ def setup_database():
                 ("idx_user_activity_type", "user_activity(activity_type)"),
                 ("idx_role_permissions_role", "role_permissions(role_id)"),
                 ("idx_cache_expires", "cache_table(expires_at)"),
-
+                ("idx_cache_expiry ON cache(expires_at)"),
                 # Stats System Indexes
                 ("idx_activity_logs_guild", "activity_logs(guild_id)"),
                 ("idx_activity_logs_user", "activity_logs(user_id)"),
@@ -551,7 +558,7 @@ def setup_database():
                 ("idx_rep_history_guild", "reputation_history(guild_id)"),
                 ("idx_rep_roles_guild", "reputation_roles(guild_id)"),
                 ("idx_rep_settings_guild", "reputation_settings(guild_id)"),
-
+    
                 # Poll System Indexes
                 ("idx_polls_guild", "polls(guild_id)"),
                 ("idx_polls_channel", "polls(channel_id)"),
