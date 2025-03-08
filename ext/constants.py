@@ -2,11 +2,13 @@
 Constants for Store DC Bot
 Author: fdyyuk
 Created at: 2025-03-07 18:04:56 UTC
+Last Modified: 2025-03-08 05:28:44 UTC
 """
 
 import discord
 from enum import Enum, auto
 from typing import Dict, Union, List
+from datetime import timedelta
 
 # File Size Settings
 MAX_STOCK_FILE_SIZE = 5 * 1024 * 1024  # 5MB max file size for stock files
@@ -19,42 +21,68 @@ VALID_STOCK_FORMATS = ['txt']  # Format file yang diizinkan untuk stock
 # Transaction Types
 class TransactionType(Enum):
     PURCHASE = "purchase"
+    DEPOSIT = "deposit"
+    WITHDRAWAL = "withdrawal"
     DONATION = "donation"
     ADMIN_ADD = "admin_add"
     ADMIN_REMOVE = "admin_remove"
-    ADMIN_RESET = "admin_reset"  # Ditambahkan untuk fitur reset
+    ADMIN_RESET = "admin_reset"
     REFUND = "refund"
     TRANSFER = "transfer"
 
-# Transaction Types untuk referensi dictionary
-TRANSACTION_TYPES = {
-    'PURCHASE': "purchase",
-    'DONATION': "donation",
-    'ADMIN_ADD': "admin_add",
-    'ADMIN_REMOVE': "admin_remove",
-    'ADMIN_RESET': "admin_reset",
-    'REFUND': "refund",
-    'TRANSFER': "transfer"
-}
-
-# Status Enums
+# Status untuk database
 class Status(Enum):
-    SUCCESS = auto()
-    FAILED = auto()
-    PENDING = auto()
-    CANCELLED = auto()
-    ERROR = auto()
-    IN_STOCK = "Tersedia"
-    LOW_STOCK = "Stock Menipis"
-    OUT_OF_STOCK = "Habis"
-    DISCONTINUED = "Dihentikan"
+    AVAILABLE = "available"  # Status di database
+    SOLD = "sold"          # Status di database
+    DELETED = "deleted"    # Status di database
 
-# Balance Settings
+# Balance Class yang lengkap
 class Balance:
-    MIN_AMOUNT = 0
-    MAX_AMOUNT = 1000000  # 1M WLS
-    DEFAULT_AMOUNT = 0
-    DONATION_MIN = 10     # 10 WLS minimum donation
+    def __init__(self, wl: int = 0, dl: int = 0, bgl: int = 0):
+        self.wl = max(0, wl)
+        self.dl = max(0, dl)
+        self.bgl = max(0, bgl)
+        self.MIN_AMOUNT = 0
+        self.MAX_AMOUNT = 1000000  # 1M WLS
+        self.DEFAULT_AMOUNT = 0
+        self.DONATION_MIN = 10     # 10 WLS minimum donation
+
+    def total_wl(self) -> int:
+        """Convert semua balance ke WL"""
+        return self.wl + (self.dl * 100) + (self.bgl * 10000)
+
+    def format(self) -> str:
+        """Format balance untuk display"""
+        parts = []
+        if self.bgl > 0:
+            parts.append(f"{self.bgl:,} BGL")
+        if self.dl > 0:
+            parts.append(f"{self.dl:,} DL")
+        if self.wl > 0 or not parts:
+            parts.append(f"{self.wl:,} WL")
+        return ", ".join(parts)
+
+    @classmethod
+    def from_wl(cls, total_wl: int) -> 'Balance':
+        """Buat Balance object dari total WL"""
+        bgl = total_wl // 10000
+        remaining = total_wl % 10000
+        dl = remaining // 100
+        wl = remaining % 100
+        return cls(wl, dl, bgl)
+
+    def __eq__(self, other):
+        if not isinstance(other, Balance):
+            return False
+        return self.total_wl() == other.total_wl()
+
+    def __str__(self):
+        return self.format()
+
+    def validate(self) -> bool:
+        """Validasi balance"""
+        total = self.total_wl()
+        return self.MIN_AMOUNT <= total <= self.MAX_AMOUNT
 
 # Extensions Configuration
 class EXTENSIONS:
@@ -116,9 +144,9 @@ class CURRENCY_RATES:
     
     # Display formats
     FORMATS = {
-        'WL': '{} WL',
-        'DL': '{} DL',
-        'BGL': '{} BGL'
+        'WL': '{:,} WL',
+        'DL': '{:,} DL',
+        'BGL': '{:,} BGL'
     }
     
     @classmethod
@@ -171,7 +199,9 @@ class MESSAGES:
         'PURCHASE': "✅ Pembelian berhasil!\nDetail pembelian:",
         'STOCK_UPDATE': "✅ Stock berhasil diupdate!",
         'DONATION': "✅ Donasi berhasil diterima!",
-        'BALANCE_UPDATE': "✅ Balance berhasil diupdate!"
+        'BALANCE_UPDATE': "✅ Balance berhasil diupdate!",
+        'REGISTRATION': "✅ Registrasi berhasil! GrowID: {growid}",
+        'WORLD_UPDATE': "✅ World info berhasil diupdate!"
     }
     
     ERROR = {
@@ -180,7 +210,16 @@ class MESSAGES:
         'INVALID_AMOUNT': "❌ Jumlah tidak valid!",
         'PERMISSION_DENIED': "❌ Anda tidak memiliki izin!",
         'INVALID_INPUT': "❌ Input tidak valid!",
-        'TRANSACTION_FAILED': "❌ Transaksi gagal!"
+        'TRANSACTION_FAILED': "❌ Transaksi gagal!",
+        'REGISTRATION_FAILED': "❌ Registrasi gagal! Silakan coba lagi.",
+        'NOT_REGISTERED': "❌ Anda belum terdaftar! Gunakan tombol Register.",
+        'BALANCE_NOT_FOUND': "❌ Balance tidak ditemukan!",
+        'BALANCE_FAILED': "❌ Gagal mengambil informasi balance!",
+        'WORLD_INFO_FAILED': "❌ Gagal mengambil informasi world!",
+        'NO_HISTORY': "❌ Tidak ada riwayat transaksi!",
+        'INVALID_GROWID': "❌ GrowID tidak valid!",
+        'PRODUCT_NOT_FOUND': "❌ Produk tidak ditemukan!",
+        'INSUFFICIENT_STOCK': "❌ Stock tidak mencukupi!"
     }
     
     INFO = {
@@ -190,12 +229,11 @@ class MESSAGES:
     }
 
 # Button IDs
-# Perbaikan untuk class BUTTON_IDS
 class BUTTON_IDS:
     # Basic Buttons
     CONFIRM = "confirm_{}"
     CANCEL = "cancel_{}"
-    BUY = "buy"  # Diubah dari "buy_{}" ke "buy" untuk konsistensi
+    BUY = "buy"
     DONATE = "donate"
     REFRESH = "refresh"
     
@@ -221,7 +259,7 @@ class BUTTON_IDS:
     def get_cancel_id(cls, action_id: str) -> str:
         """Generate ID untuk pembatalan umum"""
         return cls.CANCEL.format(action_id)
-        
+
 # Update Intervals (in seconds)
 class UPDATE_INTERVAL:
     LIVE_STOCK = 55.0    # Update live stock every 55 seconds
@@ -231,10 +269,15 @@ class UPDATE_INTERVAL:
 
 # Cache Settings
 class CACHE_TIMEOUT:
-    SHORT = 300    # 5 minutes
-    MEDIUM = 3600  # 1 hour
-    LONG = 86400   # 24 hours
-    PERMANENT = None
+    SHORT = timedelta(minutes=5)      # 5 menit
+    MEDIUM = timedelta(hours=1)       # 1 jam
+    LONG = timedelta(days=1)          # 24 jam
+    PERMANENT = timedelta(days=3650)  # 10 tahun (effectively permanent)
+
+    @classmethod
+    def get_seconds(cls, timeout: timedelta) -> int:
+        """Convert timedelta ke detik"""
+        return int(timeout.total_seconds())
 
 # Command Cooldowns (in seconds)
 class CommandCooldown:
