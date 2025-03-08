@@ -2,7 +2,7 @@
 Live Buttons Manager with Shop Integration
 Author: fdyyuk
 Created at: 2025-03-07 22:35:08 UTC
-Last Modified: 2025-03-08 05:59:13 UTC
+Last Modified: 2025-03-08 08:54:03 UTC
 """
 
 import logging
@@ -19,23 +19,17 @@ from .constants import (
     MESSAGES,
     BUTTON_IDS,
     CACHE_TIMEOUT,
-    Stock,
     Balance,
     TransactionType,
-    Status,
-    CURRENCY_RATES,
-    UPDATE_INTERVAL,
-    COOLDOWN_TIME
+    CURRENCY_RATES
 )
 
 from .base_handler import BaseLockHandler
 from .cache_manager import CacheManager
 from .product_manager import ProductManagerService
 from .balance_manager import BalanceManagerService
-from .models import Transaction, Product
 
-# [rest of the code...]
-# Custom Exceptions
+# Sisanya tetap sama...
 class ShopError(Exception):
     """Base exception for shop errors"""
     pass
@@ -167,6 +161,7 @@ class ShopView(View):
         self.bot = bot
         self.balance_manager = BalanceManagerService(bot)
         self.product_manager = ProductManagerService(bot)
+        self.cache_manager = CacheManager()
         self.logger = logging.getLogger("ShopView")
         self._interaction_locks = {}
         self._last_cleanup = datetime.utcnow()
