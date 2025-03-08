@@ -12,26 +12,25 @@ Dependencies:
 - ext.constants: For configuration and responses
 """
 
+import discord
+from discord.ext import commands, tasks
+from discord import ui
 import logging
 import asyncio
-from typing import Optional, List, Dict
 from datetime import datetime
-
-import discord
-from discord.ext import commands
-from discord.ui import Button, View, Modal, TextInput, Select
+from typing import Optional, Dict
 
 from .constants import (
     COLORS,
     MESSAGES,
     BUTTON_IDS,
     CACHE_TIMEOUT,
-    Balance,
-    TransactionType,
-    CURRENCY_RATES,
+    Stock,
     Status,
-    Stock
+    CURRENCY_RATES,
+    UPDATE_INTERVAL
 )
+
 
 from .base_handler import BaseLockHandler
 from .cache_manager import CacheManager
