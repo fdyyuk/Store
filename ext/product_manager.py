@@ -598,6 +598,23 @@ class ProductManagerService(BaseLockHandler):
             self.logger.info("ProductManagerService cleanup completed")
         except Exception as e:
             self.logger.error(f"Error during ProductManagerService cleanup: {e}")
+    async def verify_dependencies(self) -> bool:
+        """Verify all required dependencies are available"""
+        try:
+            # Verifikasi koneksi database
+            conn = None
+            try:
+                conn = get_connection()
+                cursor = conn.cursor()
+                cursor.execute("SELECT 1")  # Simple test query
+                cursor.fetchone()
+                return True
+            finally:
+                if conn:
+                    conn.close()
+        except Exception as e:
+            self.logger.error(f"Failed to verify dependencies: {e}")
+            return False
 
 class ProductManagerCog(commands.Cog):
     def __init__(self, bot):
