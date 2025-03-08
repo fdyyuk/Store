@@ -2,6 +2,7 @@
 Live Stock Manager
 Author: fdyyuk
 Created at: 2025-03-07 18:30:16 UTC
+Last Modified: 2025-03-08 05:51:06 UTC
 """
 
 import logging
@@ -16,7 +17,8 @@ from .constants import (
     UPDATE_INTERVAL,
     CACHE_TIMEOUT,
     Stock,
-    CURRENCY_RATES
+    CURRENCY_RATES,
+    Status
 )
 
 from .base_handler import BaseLockHandler
@@ -52,7 +54,19 @@ class LiveStockManager(BaseLockHandler):
     async def create_stock_embed(self) -> discord.Embed:
         """Buat embed untuk display stock"""
         try:
-            products = await self.product_manager.get_all_products()
+            # Cek cache untuk products
+            cache_key = 'all_products_display'
+            cached_products = await self.cache_manager.get(cache_key)
+            
+            if not cached_products:
+                products = await self.product_manager.get_all_products()
+                await self.cache_manager.set(
+                    cache_key,
+                    products,
+                    expires_in=CACHE_TIMEOUT.get_seconds(CACHE_TIMEOUT.SHORT)
+                )
+            else:
+                products = cached_products
             
             embed = discord.Embed(
                 title="🏪 Live Stock Status",
@@ -62,7 +76,7 @@ class LiveStockManager(BaseLockHandler):
                     "Stock dan harga diperbarui secara real-time\n"
                     "```"
                 ),
-                color=COLORS['info']
+                color=COLORS.INFO
             )
 
             # Format waktu server
@@ -76,7 +90,17 @@ class LiveStockManager(BaseLockHandler):
             # Display products dengan format yang lebih rapi
             for product in products:
                 try:
-                    stock_count = await self.product_manager.get_stock_count(product['name'])
+                    # Get stock count with caching
+                    stock_cache_key = f'stock_count_{product["name"]}'
+                    stock_count = await self.cache_manager.get(stock_cache_key)
+                    
+                    if stock_count is None:
+                        stock_count = await self.product_manager.get_stock_count(product['name'])
+                        await self.cache_manager.set(
+                            stock_cache_key,
+                            stock_count,
+                            expires_in=CACHE_TIMEOUT.get_seconds(CACHE_TIMEOUT.SHORT)
+                        )
                     
                     # Emoji status berdasarkan threshold
                     status_emoji = "🟢" if stock_count > Stock.ALERT_THRESHOLD else "🟡" if stock_count > 0 else "🔴"
@@ -119,26 +143,29 @@ class LiveStockManager(BaseLockHandler):
             return discord.Embed(
                 title="❌ System Error",
                 description="```diff\n- Live stock display is currently unavailable\n- Please try again later or contact admin\n```",
-                color=COLORS['error']
+                color=COLORS.ERROR
             )
 
     async def update_stock_display(self) -> bool:
         """Update tampilan stock"""
         try:
             if not self.current_stock_message or not self.button_manager:
-                # Biarkan button manager yang membuat pesan
                 return False
 
             embed = await self.create_stock_embed()
             await self.current_stock_message.edit(embed=embed)
             return True
 
+        except discord.NotFound:
+            self.logger.warning("Stock message not found, resetting...")
+            self.current_stock_message = None
+            return False
         except Exception as e:
             self.logger.error(f"Error updating stock display: {e}")
             error_embed = discord.Embed(
                 title="❌ System Error",
                 description="```diff\n- Live stock display is currently unavailable\n- System will attempt to recover automatically\n```",
-                color=COLORS['error']
+                color=COLORS.ERROR
             )
             try:
                 await self.current_stock_message.edit(embed=error_embed)
@@ -153,9 +180,12 @@ class LiveStockManager(BaseLockHandler):
                 embed = discord.Embed(
                     title="🔧 Maintenance",
                     description="```\nToko sedang dalam maintenance\nMohon tunggu sebentar\n```",
-                    color=COLORS['warning']
+                    color=COLORS.WARNING
                 )
                 await self.current_stock_message.edit(embed=embed)
+                # Clear caches
+                await self.cache_manager.delete('all_products_display')
+                await self.cache_manager.delete('stock_count_*')
         except Exception as e:
             self.logger.error(f"Error in cleanup: {e}")
 
