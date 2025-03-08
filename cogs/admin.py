@@ -1,46 +1,48 @@
+"""
+Admin Commands Cog
+Author: fdyyuk
+Created at: 2025-03-07 18:04:56 UTC
+Last Modified: 2025-03-08 15:56:08 UTC
+"""
+
 import discord
 from discord.ext import commands
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 import json
 import asyncio
 from typing import Optional, List
 import io
 import psutil
 import platform
-import aiohttp
 
-# Import dari file yang sudah diperbarui
 from ext.constants import (
-    Status,              # Untuk status item (AVAILABLE, SOLD)
-    TransactionType,     # Untuk tipe transaksi admin
-    Balance,            # Untuk manajemen balance
-    COLORS,             # Untuk warna embed
-    MESSAGES,           # Untuk pesan response
-    CURRENCY_RATES,     # Untuk konversi mata uang
-    MAX_STOCK_FILE_SIZE,# Untuk validasi file
-    VALID_STOCK_FORMATS # Untuk validasi format file
+    Status,              
+    TransactionType,     
+    Balance,            
+    COLORS,             
+    MESSAGES,           
+    CURRENCY_RATES,     
+    MAX_STOCK_FILE_SIZE,
+    VALID_STOCK_FORMATS 
 )
 from ext.balance_manager import BalanceManagerService
 from ext.product_manager import ProductManagerService
 from ext.trx import TransactionManager
 from ext.base_handler import BaseLockHandler, BaseResponseHandler
-from ext.cache_manager import CacheManager
-from database import get_connection
 
 class AdminCog(commands.Cog, BaseLockHandler, BaseResponseHandler):
     def __init__(self, bot):
-        super().__init__()  # Initialize BaseLockHandler dan BaseResponseHandler
+        super().__init__()
         self.bot = bot
         self.logger = logging.getLogger("AdminCog")
         
-        # Initialize services dengan cache manager
-        self.cache_manager = CacheManager()
+        # Initialize services
         self.balance_service = BalanceManagerService(bot)
         self.product_service = ProductManagerService(bot)
         self.trx_manager = TransactionManager(bot)
         
-        # Load admin configuration dengan proper error handling
+        # Load admin configuration
         try:
             with open('config.json') as f:
                 config = json.load(f)
@@ -51,130 +53,6 @@ class AdminCog(commands.Cog, BaseLockHandler, BaseResponseHandler):
         except Exception as e:
             self.logger.critical(f"Failed to load admin configuration: {e}")
             raise
-
-    async def _check_admin(self, ctx) -> bool:
-        """Check if user has admin permissions with cache"""
-        cache_key = f"admin_check_{ctx.author.id}"
-        is_admin = await self.cache_manager.get(cache_key)
-        
-        if is_admin is None:
-            is_admin = ctx.author.id == self.admin_id
-            await self.cache_manager.set(cache_key, is_admin, expires_in=3600)
-            
-        if not is_admin:
-            embed = discord.Embed(
-                title="❌ Access Denied",
-                description="```diff\n- You don't have permission to use admin commands!```",
-                color=COLORS.ERROR
-            )
-            await self.send_response_once(ctx, embed=embed)
-            self.logger.warning(
-                f"Unauthorized access attempt by {ctx.author} (ID: {ctx.author.id})"
-            )
-        return is_admin
-
-    async def _process_command(self, ctx, command_name: str, callback) -> bool:
-        """Process command with proper locking, caching, and response handling"""
-        if hasattr(ctx, 'is_being_processed'):
-            return False
-
-        ctx.is_being_processed = True
-        cache_key = f"admin_command_{command_name}_{ctx.author.id}"
-        lock = await self.acquire_lock(cache_key)
-
-        if not lock:
-            await self.send_response_once(
-                ctx, 
-                embed=discord.Embed(
-                    title="⏳ System Busy",
-                    description="```diff\n- System is busy, please try again later```",
-                    color=COLORS.WARNING
-                )
-            )
-            return False
-
-        try:
-            if not await self._check_admin(ctx):
-                return False
-
-            response_lock = await self.acquire_response_lock(ctx)
-            if not response_lock:
-                await ctx.send("Harap tunggu sebelum menggunakan perintah ini lagi.", delete_after=5)
-                return
-
-            try:
-                await callback()
-                return True
-            finally:
-                self.release_response_lock(ctx)
-
-        except Exception as e:
-            self.logger.error(f"Error in {command_name}: {str(e)}", exc_info=True)
-            error_embed = discord.Embed(
-                title="❌ Error Occurred",
-                description=f"```diff\n- {str(e)}```",
-                color=COLORS.ERROR
-            )
-            await self.send_response_once(ctx, embed=error_embed)
-            return False
-        finally:
-            self.release_lock(cache_key)
-            delattr(ctx, 'is_being_processed')
-
-    async def _process_stock_file(self, attachment) -> List[str]:
-        """Process uploaded stock file with improved validation"""
-        if attachment.size > MAX_STOCK_FILE_SIZE:
-            raise ValueError(
-                f"File too large! Maximum size is {MAX_STOCK_FILE_SIZE/1024:.0f}KB"
-            )
-            
-        file_ext = attachment.filename.split('.')[-1].lower()
-        if file_ext not in VALID_STOCK_FORMATS:
-            raise ValueError(
-                f"Invalid file format! Supported formats: {', '.join(VALID_STOCK_FORMATS)}"
-            )
-            
-        content = await attachment.read()
-        try:
-            text = content.decode('utf-8').strip()
-        except UnicodeDecodeError:
-            raise ValueError("Invalid file encoding. Please use UTF-8")
-        
-        items = [line.strip() for line in text.split('\n') if line.strip()]
-        if not items:
-            raise ValueError("No valid items found in file!")
-            
-        return items
-
-    async def _confirm_action(self, ctx, message: str, timeout: int = 30) -> bool:
-        """Get confirmation for dangerous actions"""
-        embed = discord.Embed(
-            title="⚠️ Confirmation Required",
-            description=message,
-            color=COLORS.WARNING
-        )
-        confirm_msg = await ctx.send(embed=embed)
-        
-        await confirm_msg.add_reaction('✅')
-        await confirm_msg.add_reaction('❌')
-
-        try:
-            reaction, user = await self.bot.wait_for(
-                'reaction_add',
-                timeout=timeout,
-                check=lambda r, u: u == ctx.author and str(r.emoji) in ['✅', '❌']
-            )
-            return str(reaction.emoji) == '✅'
-        except asyncio.TimeoutError:
-            await self.send_response_once(
-                ctx, 
-                embed=discord.Embed(
-                    title="⏰ Timeout",
-                    description="```diff\n- Operation cancelled due to timeout```",
-                    color=COLORS.ERROR
-                )
-            )
-            return False
 
     @commands.command(name="adminhelp")
     async def admin_help(self, ctx):
@@ -207,10 +85,8 @@ class AdminCog(commands.Cog, BaseLockHandler, BaseResponseHandler):
                 ],
                 "System Management": [
                     "`systeminfo`\nShow bot system information",
-                    "`announcement <message>`\nSend announcement to all users",
                     "`maintenance <on/off>`\nToggle maintenance mode",
-                    "`blacklist <add/remove> <growid>`\nManage blacklisted users",
-                    "`backup`\nCreate database backup"
+                    "`blacklist <add/remove> <growid>`\nManage blacklisted users"
                 ]
             }
 
@@ -226,178 +102,40 @@ class AdminCog(commands.Cog, BaseLockHandler, BaseResponseHandler):
 
         await self._process_command(ctx, "adminhelp", execute)
 
-    @commands.command(name="addworld")
-    async def add_world(self, ctx, world_name: str, *, description: str = None):
-        """Add world info"""
-        async def execute():
-            # Validation
-            if not world_name or not world_name.isalnum():
-                raise ValueError("World name must be alphanumeric")
-                
-            world_name = world_name.upper()
-            
-            # Add world using product service
-            result = await self.product_service.add_world(
-                world_name=world_name,
-                description=description or "No description",
-                added_by=str(ctx.author.id)
-            )
-            
+    async def _check_admin(self, ctx) -> bool:
+        """Check if user has admin permissions"""
+        is_admin = ctx.author.id == self.admin_id
+        if not is_admin:
             embed = discord.Embed(
-                title="✅ World Added",
-                color=COLORS.SUCCESS,
-                timestamp=datetime.utcnow()
+                title="❌ Access Denied",
+                description="```diff\n- You don't have permission to use admin commands!```",
+                color=COLORS.ERROR
             )
-            
-            embed.add_field(
-                name="🌍 World Details",
-                value=(
-                    f"```yml\n"
-                    f"Name: {result['name']}\n"
-                    f"Description: {result['description']}\n"
-                    f"Status: {result['status']}\n"
-                    f"Added By: {ctx.author.name}\n"
-                    f"```"
-                ),
-                inline=False
-            )
-            
             await self.send_response_once(ctx, embed=embed)
-            self.logger.info(f"World {world_name} added by {ctx.author}")
-                
-        await self._process_command(ctx, "addworld", execute)
-
-    @commands.command(name="addproduct")
-    async def add_product(self, ctx, code: str, name: str, price: int, *, description: Optional[str] = None):
-        """Add new product with improved validation"""
-        async def execute():
-            result = await self.product_service.create_product(
-                code=code,
-                name=name,
-                price=price,
-                description=description,
-                added_by=str(ctx.author.id)
+            self.logger.warning(
+                f"Unauthorized access attempt by {ctx.author} (ID: {ctx.author.id})"
             )
-            
-            embed = discord.Embed(
-                title="✅ Product Added",
-                color=COLORS.SUCCESS,
-                timestamp=datetime.utcnow()
+        return is_admin
+
+    async def _process_command(self, ctx, command_name: str, callback) -> bool:
+        """Process command with proper handling"""
+        if not await self._check_admin(ctx):
+            return False
+
+        try:
+            await callback()
+            return True
+        except Exception as e:
+            self.logger.error(f"Error in {command_name}: {str(e)}", exc_info=True)
+            error_embed = discord.Embed(
+                title="❌ Error Occurred",
+                description=f"```diff\n- {str(e)}```",
+                color=COLORS.ERROR
             )
-            
-            embed.add_field(
-                name="📦 Product Details",
-                value=(
-                    f"```yml\n"
-                    f"Code: {result['code']}\n"
-                    f"Name: {result['name']}\n"
-                    f"Price: {result['price']:,} WLs\n"
-                    f"Description: {result['description'] or 'No description'}\n"
-                    f"Added By: {ctx.author.name}\n"
-                    f"```"
-                ),
-                inline=False
-            )
-            
-            await self.send_response_once(ctx, embed=embed)
-            self.logger.info(f"Product {code} added by {ctx.author}")
-            
-            # Invalidate product cache
-            await self.cache_manager.delete(f"product_{code}")
-            
-        await self._process_command(ctx, "addproduct", execute)
+            await self.send_response_once(ctx, embed=error_embed)
+            return False
 
-    @commands.command(name="addstock")
-    async def add_stock(self, ctx, code: str):
-        """Add stock from file with improved validation and progress tracking"""
-        async def execute():
-            if not ctx.message.attachments:
-                raise ValueError("Please attach a text file containing the stock items!")
-
-            # Verify product exists
-            product = await self.product_service.get_product(code)
-            if not product:
-                raise ValueError(f"Product code `{code}` not found!")
-
-            # Process stock file
-            items = await self._process_stock_file(ctx.message.attachments[0])
-
-            # Add stock with progress updates
-            progress_msg = await ctx.send(
-                embed=discord.Embed(
-                    title="⏳ Adding Stock",
-                    description="Processing items...",
-                    color=COLORS['info']
-                )
-            )
-            
-            added_count = 0
-            failed_count = 0
-            error_items = []
-
-            for i, item in enumerate(items, 1):
-                try:
-                    await self.product_service.add_stock_item(
-                        code,
-                        item,
-                        str(ctx.author.id)
-                    )
-                    added_count += 1
-                except Exception as e:
-                    failed_count += 1
-                    error_items.append(f"Item {i}: {str(e)}")
-
-                if i % 10 == 0:
-                    await progress_msg.edit(
-                        embed=discord.Embed(
-                            title="⏳ Adding Stock",
-                            description=f"Processing... {i}/{len(items)} items",
-                            color=COLORS['info']
-                        )
-                    )
-
-            await progress_msg.delete()
-
-            # Create result embed
-            embed = discord.Embed(
-                title="✅ Stock Added",
-                color=COLORS.SUCCESS,
-                timestamp=datetime.utcnow()
-            )
-            
-            embed.add_field(
-                name="📦 Stock Summary",
-                value=(
-                    f"```yml\n"
-                    f"Product: {product['name']} ({code})\n"
-                    f"Total Items: {len(items)}\n"
-                    f"Added: {added_count}\n"
-                    f"Failed: {failed_count}\n"
-                    f"```"
-                ),
-                inline=False
-            )
-
-            if error_items:
-                embed.add_field(
-                    name="❌ Errors",
-                    value="\n".join(error_items[:5]) + (
-                        "\n..." if len(error_items) > 5 else ""
-                    ),
-                    inline=False
-                )
-
-            await self.send_response_once(ctx, embed=embed)
-            self.logger.info(
-                f"Stock added for {code} by {ctx.author}: "
-                f"{added_count} success, {failed_count} failed"
-            )
-            
-            # Invalidate stock cache
-            await self.cache_manager.delete(f"stock_{code}")
-
-        await self._process_command(ctx, "addstock", execute)
-
+    # Core commands yang menggunakan service
     @commands.command(name="addbal")
     async def add_balance(self, ctx, growid: str, amount: int, currency: str):
         """Add balance to user"""
@@ -409,15 +147,18 @@ class AdminCog(commands.Cog, BaseLockHandler, BaseResponseHandler):
             if amount <= 0:
                 raise ValueError("Amount must be positive!")
 
-            # Convert to WLs
+            # Convert ke WL sesuai currency
             wls = amount if currency == "WL" else amount * CURRENCY_RATES[currency]
 
-            new_balance = await self.balance_service.update_balance(
+            response = await self.balance_service.update_balance(
                 growid=growid,
                 wl=wls,
                 details=f"Added by admin {ctx.author}",
                 transaction_type=TransactionType.ADMIN_ADD
             )
+
+            if not response.success:
+                raise ValueError(response.error)
 
             embed = discord.Embed(
                 title="✅ Balance Added",
@@ -431,7 +172,7 @@ class AdminCog(commands.Cog, BaseLockHandler, BaseResponseHandler):
                     f"```yml\n"
                     f"GrowID: {growid}\n"
                     f"Added: {amount:,} {currency}\n"
-                    f"New Balance: {new_balance.format()}\n"
+                    f"New Balance: {response.data.format()}\n"
                     f"```"
                 ),
                 inline=False
@@ -439,10 +180,6 @@ class AdminCog(commands.Cog, BaseLockHandler, BaseResponseHandler):
             embed.set_footer(text=f"Added by {ctx.author}")
 
             await self.send_response_once(ctx, embed=embed)
-            self.logger.info(f"Balance added for {growid} by {ctx.author}")
-
-            # Invalidate balance cache
-            await self.cache_manager.delete(f"balance_{growid}")
 
         await self._process_command(ctx, "addbal", execute)
 
@@ -457,19 +194,22 @@ class AdminCog(commands.Cog, BaseLockHandler, BaseResponseHandler):
             if amount <= 0:
                 raise ValueError("Amount must be positive!")
 
-            # Convert to negative WLs
+            # Convert ke negative WL sesuai currency
             wls = -(amount if currency == "WL" else amount * CURRENCY_RATES[currency])
 
-            new_balance = await self.balance_service.update_balance(
+            response = await self.balance_service.update_balance(
                 growid=growid,
                 wl=wls,
                 details=f"Removed by admin {ctx.author}",
                 transaction_type=TransactionType.ADMIN_REMOVE
             )
 
+            if not response.success:
+                raise ValueError(response.error)
+
             embed = discord.Embed(
                 title="✅ Balance Removed",
-                color=COLORS.ERROR,
+                color=COLORS.SUCCESS,
                 timestamp=datetime.utcnow()
             )
             
@@ -479,7 +219,7 @@ class AdminCog(commands.Cog, BaseLockHandler, BaseResponseHandler):
                     f"```yml\n"
                     f"GrowID: {growid}\n"
                     f"Removed: {amount:,} {currency}\n"
-                    f"New Balance: {new_balance.format()}\n"
+                    f"New Balance: {response.data.format()}\n"
                     f"```"
                 ),
                 inline=False
@@ -487,10 +227,6 @@ class AdminCog(commands.Cog, BaseLockHandler, BaseResponseHandler):
             embed.set_footer(text=f"Removed by {ctx.author}")
 
             await self.send_response_once(ctx, embed=embed)
-            self.logger.info(f"Balance removed from {growid} by {ctx.author}")
-
-            # Invalidate balance cache
-            await self.cache_manager.delete(f"balance_{growid}")
 
         await self._process_command(ctx, "removebal", execute)
 
@@ -498,28 +234,29 @@ class AdminCog(commands.Cog, BaseLockHandler, BaseResponseHandler):
     async def check_balance(self, ctx, growid: str):
         """Check user balance"""
         async def execute():
-            balance = await self.balance_service.get_balance(growid)
-            if not balance:
-                raise ValueError(f"User {growid} not found!")
+            balance_response = await self.balance_service.get_balance(growid)
+            if not balance_response.success:
+                raise ValueError(balance_response.error)
 
-            transactions = await self.trx_manager.get_transaction_history(growid, limit=5)
+            # Get transaction history
+            trx_response = await self.trx_manager.get_transaction_history(growid, limit=5)
 
             embed = discord.Embed(
                 title=f"👤 User Information - {growid}",
-                color=COLORS['info'],
+                color=COLORS.INFO,
                 timestamp=datetime.utcnow()
             )
             
             embed.add_field(
                 name="💰 Current Balance",
-                value=f"```yml\n{balance.format()}\n```",
+                value=f"```yml\n{balance_response.data.format()}\n```",
                 inline=False
             )
 
-            if transactions:
+            if trx_response.success and trx_response.data:
                 recent_tx = "\n".join([
                     f"• {tx['type']} - {tx['timestamp']}: {tx['details']}"
-                    for tx in transactions
+                    for tx in trx_response.data[:5]
                 ])
                 embed.add_field(
                     name="📝 Recent Transactions",
