@@ -2,7 +2,16 @@
 Balance Manager Service
 Author: fdyyuk
 Created at: 2025-03-07 18:04:56 UTC
-Last Modified: 2025-03-08 05:39:58 UTC
+Last Modified: 2025-03-08 13:58:17 UTC
+
+Dependencies:
+- database.py: For database connections
+- base_handler.py: For lock management
+- cache_manager.py: For caching functionality
+
+Note: While this service is loaded after product_manager for organizational purposes,
+it doesn't directly depend on product_manager's functionality. The order is maintained
+for future features that might require product validation during balance operations.
 """
 
 import logging
@@ -42,6 +51,67 @@ class BalanceManagerService(BaseLockHandler):
             self.logger = logging.getLogger("BalanceManagerService")
             self.cache_manager = CacheManager()
             self.initialized = True
+
+    async def verify_dependencies(self) -> bool:
+        """Verify all required dependencies are loaded"""
+        try:
+            # Verify database connection and required tables
+            conn = get_connection()
+            cursor = conn.cursor()
+            
+            # Verify user_growid table exists
+            cursor.execute("""
+                SELECT name FROM sqlite_master 
+                WHERE type='table' AND name='user_growid'
+            """)
+            if not cursor.fetchone():
+                raise Exception("Required table 'user_growid' not found")
+            
+            # Verify users table exists
+            cursor.execute("""
+                SELECT name FROM sqlite_master 
+                WHERE type='table' AND name='users'
+            """)
+            if not cursor.fetchone():
+                raise Exception("Required table 'users' not found")
+            
+            # Verify transactions table exists
+            cursor.execute("""
+                SELECT name FROM sqlite_master 
+                WHERE type='table' AND name='transactions'
+            """)
+            if not cursor.fetchone():
+                raise Exception("Required table 'transactions' not found")
+            
+            # Verify cache manager
+            await self.cache_manager.set("test_key", "test_value", expires_in=1)
+            test_value = await self.cache_manager.get("test_key")
+            if test_value != "test_value":
+                raise Exception("Cache verification failed")
+                
+            return True
+        except Exception as e:
+            self.logger.error(f"Dependency verification failed: {e}")
+            return False
+        finally:
+            if conn:
+                conn.close()
+
+    async def cleanup(self):
+        """Cleanup resources before unloading"""
+        try:
+            # Clear all balance related caches
+            patterns = [
+                "balance_*",
+                "growid_*",
+                "discord_id_*",
+                "trx_history_*"
+            ]
+            for pattern in patterns:
+                await self.cache_manager.delete_pattern(pattern)
+            self.logger.info("BalanceManagerService cleanup completed")
+        except Exception as e:
+            self.logger.error(f"Error during BalanceManagerService cleanup: {e}")
 
     async def get_growid(self, discord_id: str) -> Optional[str]:
         """Get GrowID for Discord user with proper locking and caching"""
@@ -402,7 +472,13 @@ class BalanceManagerCog(commands.Cog):
 
 async def setup(bot):
     if not hasattr(bot, 'balance_manager_loaded'):
-        await bot.add_cog(BalanceManagerCog(bot))
+        cog = BalanceManagerCog(bot)
+        
+        # Verify dependencies before loading
+        if not await cog.balance_service.verify_dependencies():
+            raise Exception("BalanceManager dependencies verification failed")
+            
+        await bot.add_cog(cog)
         bot.balance_manager_loaded = True
         logging.info(
             f'BalanceManager cog loaded successfully at '
