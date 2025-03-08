@@ -3,22 +3,26 @@ from discord.ext import commands
 import logging
 from datetime import datetime
 import json
-import asyncio
-from http.server import BaseHTTPRequestHandler, HTTPServer
+import re
 from database import get_connection
 from .constants import (
-    Balance,         # Untuk perhitungan balance
-    TransactionError,# Untuk error handling
-    CURRENCY_RATES, # Untuk konversi mata uang
-    MESSAGES,       # Untuk pesan response
-    TransactionType # Untuk tipe transaksi DONATION
+    Balance,         
+    TransactionError,
+    CURRENCY_RATES,  
+    MESSAGES,       
+    TransactionType, 
+    COLORS,
+    PATHS
 )
-# Load config
-with open('config.json') as config_file:
-    config = json.load(config_file)
 
-DONATION_LOG_CHANNEL_ID = int(config['id_donation_log'])
-PORT = 8081
+# Load config sekali saat modul di-import
+try:
+    with open(PATHS.CONFIG, 'r') as config_file:
+        config = json.load(config_file)
+    DONATION_CHANNEL_ID = int(config.get('id_donation_channel'))
+except Exception as e:
+    logging.error(f"Failed to load donation channel ID from config: {e}")
+    DONATION_CHANNEL_ID = None
 
 class DonationManager:
     """Manager class for handling donations"""
@@ -33,229 +37,206 @@ class DonationManager:
         if not hasattr(self, 'initialized'):
             self.bot = bot
             self.logger = logging.getLogger("DonationManager")
+            self.balance_manager = None
+            
+            # Validasi channel ID saat inisialisasi
+            if not DONATION_CHANNEL_ID:
+                self.logger.error("Donation channel ID not configured in config.json")
+            
             self.initialized = True
+
+    async def validate_growid(self, growid: str) -> tuple[bool, str]:
+        """Validasi GrowID menggunakan balance manager"""
+        try:
+            # Gunakan balance manager untuk cek GrowID
+            user_data = await self.balance_manager.get_user(growid)
+            
+            if not user_data:
+                return False, "❌ GrowID tidak terdaftar di database"
+                
+            # Cek apakah format GrowID sesuai dengan yang di database
+            if user_data.growid != growid:
+                return False, f"❌ Format GrowID salah. Gunakan: {user_data.growid}"
+                
+            return True, "✅ GrowID valid"
+            
+        except Exception as e:
+            self.logger.error(f"Error validating GrowID: {e}")
+            return False, "❌ Terjadi kesalahan saat validasi GrowID"
 
     def parse_deposit(self, deposit: str) -> tuple[int, int, int]:
         """Parse deposit string into WL, DL, BGL amounts"""
         wl = dl = bgl = 0
         
-        deposits = deposit.split(',')
-        for d in deposits:
-            d = d.strip()
-            if 'World Lock' in d:
-                wl += int(d.split()[0])
-            elif 'Diamond Lock' in d:
-                dl += int(d.split()[0])
-            elif 'Blue Gem Lock' in d:
-                bgl += int(d.split()[0])
+        if 'World Lock' in deposit:
+            wl = int(re.search(r'(\d+) World Lock', deposit).group(1))
+        if 'Diamond Lock' in deposit:
+            dl = int(re.search(r'(\d+) Diamond Lock', deposit).group(1))
+        if 'Blue Gem Lock' in deposit:
+            bgl = int(re.search(r'(\d+) Blue Gem Lock', deposit).group(1))
                 
         return wl, dl, bgl
 
-    async def process_donation(self, growid: str, wl: int, dl: int, bgl: int) -> Balance:
+    async def process_donation(self, growid: str, wl: int, dl: int, bgl: int, current_balance: Balance) -> Balance:
         """Process a donation"""
-        conn = None
         try:
-            conn = get_connection()
-            cursor = conn.cursor()
-            
-            # Get current balance
-            cursor.execute("""
-                SELECT balance_wl, balance_dl, balance_bgl 
-                FROM users 
-                WHERE growid = ?
-            """, (growid,))
-            
-            result = cursor.fetchone()
-            if not result:
-                # Create new user
-                cursor.execute("""
-                    INSERT INTO users (growid, balance_wl, balance_dl, balance_bgl)
-                    VALUES (?, 0, 0, 0)
-                """, (growid,))
-                current = Balance(0, 0, 0)
-            else:
-                current = Balance(
-                    result['balance_wl'],
-                    result['balance_dl'],
-                    result['balance_bgl']
-                )
-            
             # Calculate new balance
             new_balance = Balance(
-                current.wl + wl,
-                current.dl + dl,
-                current.bgl + bgl
+                current_balance.wl + wl,
+                current_balance.dl + dl,
+                current_balance.bgl + bgl
             )
-            
-            # Update balance
-            cursor.execute("""
-                UPDATE users 
-                SET balance_wl = ?,
-                    balance_dl = ?,
-                    balance_bgl = ?,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE growid = ?
-            """, (new_balance.wl, new_balance.dl, new_balance.bgl, growid))
-            
-            # Log transaction
-            total_wls = wl + (dl * CURRENCY_RATES['DL']) + (bgl * CURRENCY_RATES['BGL'])
-            
-            cursor.execute("""
-                INSERT INTO transactions 
-                (growid, type, details, old_balance, new_balance, total_price)
-                VALUES (?, 'DONATION', ?, ?, ?, ?)
-            """, (
+
+            # Update balance menggunakan balance manager
+            await self.balance_manager.update_balance(
                 growid,
-                f"Donation: {wl} WL, {dl} DL, {bgl} BGL",
-                current.format(),
-                new_balance.format(),
-                total_wls
-            ))
-            
-            conn.commit()
+                new_balance,
+                TransactionType.DONATION,
+                f"Donation: {wl} WL, {dl} DL, {bgl} BGL"
+            )
+
             return new_balance
-            
-        except Exception as e:
-            if conn:
-                conn.rollback()
-            raise e
-            
-        finally:
-            if conn:
-                conn.close()
 
-    async def log_to_discord(self, channel_id: int, growid: str, wl: int, dl: int, bgl: int, new_balance: Balance):
-        """Log donation to Discord channel"""
-        try:
-            channel = self.bot.get_channel(channel_id)
-            if not channel:
-                self.logger.error("Donation log channel not found")
-                return
-                
-            embed = discord.Embed(
-                title="💎 New Donation Received",
-                color=discord.Color.green(),
-                timestamp=datetime.utcnow()
-            )
-            
-            embed.add_field(name="GrowID", value=growid, inline=True)
-            embed.add_field(name="Amount", value=(f"• {wl:,} WL\n" f"• {dl:,} DL\n" f"• {bgl:,} BGL"), inline=True)
-            embed.add_field(name="New Balance", value=new_balance.format(), inline=False)
-            
-            await channel.send(embed=embed)
-            
-        except Exception as e:
-            self.logger.error(f"Error logging to Discord: {e}")
-
-class DonateHandler(BaseHTTPRequestHandler):
-    """HTTP handler for donation requests"""
-    bot = None
-    manager = None
-    logger = logging.getLogger("DonateHandler")
-
-    def do_POST(self):
-        """Handle POST requests"""
-        try:
-            content_length = int(self.headers['Content-Length'])
-            post_data = self.rfile.read(content_length)
-            self.logger.info(f"Received donation data: {post_data}")
-            
-            data = json.loads(post_data)
-            growid = data.get('GrowID')
-            deposit = data.get('Deposit')
-            
-            if not growid or not deposit:
-                self.send_error_response("Invalid data")
-                return
-                
-            # Parse deposit amounts
-            wl, dl, bgl = self.manager.parse_deposit(deposit)
-            
-            # Process donation using asyncio
-            loop = asyncio.get_event_loop()
-            new_balance = loop.run_until_complete(
-                self.manager.process_donation(growid, wl, dl, bgl)
-            )
-            
-            # Send success response
-            self.send_success_response(growid, wl, dl, bgl, new_balance)
-            
-            # Log to Discord
-            loop.run_until_complete(
-                self.manager.log_to_discord(
-                    DONATION_LOG_CHANNEL_ID,
-                    growid, 
-                    wl, 
-                    dl, 
-                    bgl, 
-                    new_balance
-                )
-            )
-            
-        except json.JSONDecodeError:
-            self.send_error_response("Invalid JSON data")
         except Exception as e:
             self.logger.error(f"Error processing donation: {e}")
-            self.send_error_response("Internal server error")
+            raise
 
-    def send_success_response(self, growid: str, wl: int, dl: int, bgl: int, new_balance: Balance):
-        """Send success response"""
-        self.send_response(200)
-        self.send_header('Content-type', 'text/plain')
-        self.end_headers()
-        
-        response = (
-            f"✅ Donation received!\n"
-            f"GrowID: {growid}\n"
-            f"Amount: {wl} WL, {dl} DL, {bgl} BGL\n"
-            f"New Balance:\n{new_balance.format()}"
+    async def process_webhook_message(self, message: discord.Message) -> None:
+        """Proses pesan dari webhook"""
+        try:
+            # Pastikan pesan dari webhook
+            if not message.author.bot or not message.webhook_id:
+                return
+
+            # Parse pesan webhook
+            match = re.search(r"GrowID: (\w+)\nJumlah: (.+)", message.content)
+            if not match:
+                await self.send_error(message.channel, "Format pesan tidak valid")
+                return
+
+            growid = match.group(1)
+            deposit_str = match.group(2)
+
+            # Validasi GrowID menggunakan balance manager
+            is_valid, message_text = await self.validate_growid(growid)
+            if not is_valid:
+                await self.send_error(message.channel, message_text)
+                return
+
+            # Get current balance via balance manager
+            user_data = await self.balance_manager.get_user(growid)
+            if not user_data:
+                await self.send_error(message.channel, "GrowID tidak ditemukan")
+                return
+
+            current_balance = user_data.balance
+
+            # Parse deposit amounts
+            try:
+                wl, dl, bgl = self.parse_deposit(deposit_str)
+                if wl == 0 and dl == 0 and bgl == 0:
+                    await self.send_error(message.channel, "Jumlah donasi tidak valid")
+                    return
+            except Exception:
+                await self.send_error(message.channel, "Format jumlah donasi tidak valid")
+                return
+
+            # Process donation
+            try:
+                new_balance = await self.process_donation(growid, wl, dl, bgl, current_balance)
+                await self.send_success(message.channel, growid, wl, dl, bgl, new_balance)
+            except Exception as e:
+                await self.send_error(message.channel, f"Gagal memproses donasi: {str(e)}")
+
+        except Exception as e:
+            self.logger.error(f"Error processing webhook message: {e}")
+            await self.send_error(message.channel, "Terjadi kesalahan sistem")
+
+    async def send_error(self, channel: discord.TextChannel, message: str):
+        """Kirim pesan error"""
+        embed = discord.Embed(
+            title="❌ Donasi Gagal",
+            description=message,
+            color=COLORS.ERROR,
+            timestamp=datetime.utcnow()
         )
-        self.wfile.write(response.encode())
+        await channel.send(embed=embed)
 
-    def send_error_response(self, message: str):
-        """Send error response"""
-        self.send_response(400)
-        self.send_header('Content-type', 'text/plain')
-        self.end_headers()
-        self.wfile.write(f"❌ Error: {message}".encode())
+    async def send_success(self, channel: discord.TextChannel, growid: str, wl: int, dl: int, bgl: int, new_balance: Balance):
+        """Kirim pesan sukses"""
+        # Hitung total dalam WL
+        total_wl = (
+            wl + 
+            (dl * CURRENCY_RATES.RATES['DL']) + 
+            (bgl * CURRENCY_RATES.RATES['BGL'])
+        )
+
+        embed = discord.Embed(
+            title="💎 Donasi Berhasil",
+            color=COLORS.SUCCESS,
+            timestamp=datetime.utcnow()
+        )
+        
+        embed.add_field(
+            name="📝 Detail Donasi",
+            value=(
+                f"**GrowID:** {growid}\n"
+                f"**Jumlah:**\n"
+                f"• {wl:,} World Lock\n"
+                f"• {dl:,} Diamond Lock\n"
+                f"• {bgl:,} Blue Gem Lock\n"
+                f"**Total:** {total_wl:,} WL"
+            ),
+            inline=False
+        )
+        
+        embed.add_field(
+            name="💰 Saldo Baru",
+            value=(
+                f"```yml\n"
+                f"World Lock   : {new_balance.wl:,}\n"
+                f"Diamond Lock : {new_balance.dl:,}\n"
+                f"Blue Gem Lock: {new_balance.bgl:,}\n"
+                f"```"
+            ),
+            inline=False
+        )
+        
+        embed.set_footer(text="Terima kasih atas donasi Anda!")
+        await channel.send(embed=embed)
 
 class Donation(commands.Cog):
     """Cog for donation system"""
     def __init__(self, bot):
         self.bot = bot
         self.logger = logging.getLogger("Donation")
-        self.server = None
         self.manager = DonationManager(bot)
-        DonateHandler.bot = bot
-        DonateHandler.manager = self.manager
-        
-        # Flag untuk mencegah duplikasi
-        if not hasattr(bot, 'donation_initialized'):
-            bot.donation_initialized = True
-            self._start_server()
-            self.logger.info("Donation cog initialized")
 
-    def _start_server(self):
-        """Start the donation server"""
-        if not self.server:
-            try:
-                self.server = HTTPServer(('0.0.0.0', PORT), DonateHandler)
-                self.logger.info(f'Starting donation server on port {PORT}')
-                self.bot.loop.run_in_executor(None, self.server.serve_forever)
-            except Exception as e:
-                self.logger.error(f"Failed to start donation server: {e}")
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        """Listen for webhook messages"""
+        # Check channel ID from config
+        if not DONATION_CHANNEL_ID:
+            return
+        if message.channel.id != DONATION_CHANNEL_ID:
+            return
 
-    def cog_unload(self):
-        """Cleanup when cog is unloaded"""
-        if self.server:
-            self.server.shutdown()
-            self.server.server_close()
-            self.server = None
-        self.logger.info("Donation cog unloaded")
+        await self.manager.process_webhook_message(message)
 
 async def setup(bot):
     """Setup the Donation cog"""
     if not hasattr(bot, 'donation_cog_loaded'):
-        await bot.add_cog(Donation(bot))
+        # Validate config first
+        if not DONATION_CHANNEL_ID:
+            logging.error("Donation channel ID not found in config.json")
+            return
+            
+        donation_cog = Donation(bot)
+        
+        # Get balance manager instance
+        from .balance_manager import BalanceManager
+        donation_cog.manager.balance_manager = BalanceManager(bot)
+        
+        await bot.add_cog(donation_cog)
         bot.donation_cog_loaded = True
         logging.info('Donation cog loaded successfully')
