@@ -137,7 +137,53 @@ class BalanceManagerService(BaseLockHandler):
         self.callback_manager.register('balance_updated', notify_balance_updated)
         self.callback_manager.register('user_registered', notify_user_registered)
 
-    # ... [Existing verify_dependencies and cleanup methods remain unchanged]
+    async def verify_dependencies(self) -> bool:
+        """Verify all required dependencies are available"""
+        try:
+            # Verifikasi koneksi database
+            conn = None
+            try:
+                conn = get_connection()
+                cursor = conn.cursor()
+                cursor.execute("SELECT 1")  # Simple test query
+                cursor.fetchone()
+                return True
+            finally:
+                if conn:
+                    conn.close()
+        except Exception as e:
+            self.logger.error(f"Failed to verify dependencies: {e}")
+            return False
+
+    async def cleanup(self):
+        """Cleanup resources before unloading"""
+        try:
+            patterns = [
+                "growid_*",
+                "discord_id_*", 
+                "balance_*",
+                "trx_history_*"
+            ]
+            for pattern in patterns:
+                await self.cache_manager.delete_pattern(pattern)
+            self.logger.info("BalanceManagerService cleanup completed")
+        except Exception as e:
+            self.logger.error(f"Error during cleanup: {e}")
+
+    async def cleanup(self):
+        """Cleanup resources before unloading"""
+        try:
+            patterns = [
+                "growid_*",
+                "discord_id_*", 
+                "balance_*",
+                "trx_history_*"
+            ]
+            for pattern in patterns:
+                await self.cache_manager.delete_pattern(pattern)
+            self.logger.info("BalanceManagerService cleanup completed")
+        except Exception as e:
+            self.logger.error(f"Error during cleanup: {e}")
 
     async def get_growid(self, discord_id: str) -> BalanceResponse:
         """Get GrowID for Discord user with proper locking and caching"""
