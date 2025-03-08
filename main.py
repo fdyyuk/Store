@@ -3,7 +3,7 @@
 Discord Bot for Store DC
 Author: fdyyuk
 Created at: 2025-03-07 18:30:16 UTC
-Last Modified: 2025-03-08 06:14:14 UTC
+Last Modified: 2025-03-08 13:44:26 UTC
 """
 
 import sys
@@ -24,7 +24,6 @@ import aiohttp
 import sqlite3
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
-# [previous imports remain the same until constants import]
 
 # Import constants first
 from ext.constants import (
@@ -53,7 +52,6 @@ from ext.cache_manager import CacheManager
 from ext.base_handler import BaseLockHandler, BaseResponseHandler
 from utils.command_handler import AdvancedCommandHandler
 
-# [rest of the code remains the same]
 # Initialize basic logging first
 logging.basicConfig(
     level=logging.INFO,
@@ -95,36 +93,6 @@ def check_dependencies():
 # Check dependencies and setup structure first
 check_dependencies()
 setup_project_structure()
-
-# Import constants first
-from ext.constants import (
-    COLORS,
-    MESSAGES,
-    BUTTON_IDS,
-    CACHE_TIMEOUT,
-    Stock,
-    Balance,
-    TransactionType,
-    Status,
-    CURRENCY_RATES,
-    UPDATE_INTERVAL,
-    EXTENSIONS,
-    LOGGING,
-    PATHS,
-    Database,
-    CommandCooldown
-)
-
-# Then import other modules
-try:
-    from database import setup_database, get_connection
-    from ext.base_handler import BaseLockHandler, BaseResponseHandler
-    from ext.cache_manager import CacheManager
-    from utils.command_handler import AdvancedCommandHandler
-except ImportError as e:
-    logger.critical(f"Failed to import required modules: {e}")
-    logger.critical("Please ensure all required files are present and properly structured")
-    sys.exit(1)
 
 # Setup enhanced logging
 log_dir = Path(PATHS.LOGS)
@@ -227,33 +195,39 @@ class StoreBot(commands.Bot):
             # Setup database first
             setup_database()
             
-            # Load core extensions first
-            for ext in EXTENSIONS.CORE:
+            # Load core services first and verify
+            for ext in EXTENSIONS.SERVICES:
                 try:
                     await self.load_extension(ext)
-                    logger.info(f"Loaded core extension: {ext}")
+                    logger.info(f"Loaded service: {ext}")
                 except Exception as e:
-                    logger.error(f"Failed to load core extension {ext}: {e}")
+                    logger.critical(f"Failed to load critical service {ext}: {e}")
                     await self.close()
                     return
+            
+            # Verify all services loaded correctly
+            if not EXTENSIONS.verify_loaded(self):
+                logger.critical("Critical services failed to load properly")
+                await self.close()
+                return
             
             # Load feature extensions
             for ext in EXTENSIONS.FEATURES:
                 try:
                     await self.load_extension(ext)
-                    logger.info(f"Loaded feature extension: {ext}")
+                    logger.info(f"Loaded feature: {ext}")
                 except Exception as e:
-                    logger.error(f"Failed to load feature extension {ext}: {e}")
+                    logger.error(f"Failed to load feature {ext}: {e}")
             
-            # Load optional extensions
-            for ext in EXTENSIONS.OPTIONAL:
+            # Load cogs last
+            for ext in EXTENSIONS.COGS:
                 try:
                     await self.load_extension(ext)
-                    logger.info(f"Loaded optional extension: {ext}")
+                    logger.info(f"Loaded cog: {ext}")
                 except Exception as e:
-                    logger.warning(f"Failed to load optional extension {ext}: {e}")
+                    logger.warning(f"Failed to load cog {ext}: {e}")
             
-            logger.info("Bot setup completed")
+            logger.info("Bot setup completed successfully")
         except Exception as e:
             logger.critical(f"Failed to setup bot: {e}")
             await self.close()
