@@ -2,6 +2,8 @@
 """
 Discord Bot for Store DC
 Author: fdyyuk
+Created at: 2025-03-07 18:30:16 UTC
+Last Modified: 2025-03-08 06:14:14 UTC
 """
 
 import sys
@@ -21,7 +23,37 @@ import asyncio
 import aiohttp
 import sqlite3
 from datetime import datetime
+from logging.handlers import RotatingFileHandler
+# [previous imports remain the same until constants import]
 
+# Import constants first
+from ext.constants import (
+    COLORS,
+    MESSAGES,
+    BUTTON_IDS,
+    CACHE_TIMEOUT,
+    Stock,
+    Balance,
+    TransactionType,
+    Status,
+    CURRENCY_RATES,
+    UPDATE_INTERVAL,
+    EXTENSIONS,
+    LOGGING,
+    PATHS,
+    Database,
+    CommandCooldown
+)
+
+# Import database
+from database import setup_database, get_connection
+
+# Import handlers and managers
+from ext.cache_manager import CacheManager
+from ext.base_handler import BaseLockHandler, BaseResponseHandler
+from utils.command_handler import AdvancedCommandHandler
+
+# [rest of the code remains the same]
 # Initialize basic logging first
 logging.basicConfig(
     level=logging.INFO,
@@ -30,12 +62,21 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+def setup_project_structure():
+    """Create necessary directories and files"""
+    dirs = ['logs', 'ext', 'utils', 'cogs', 'data', 'temp', 'backups']
+    for directory in dirs:
+        Path(directory).mkdir(exist_ok=True)
+        init_file = Path(directory) / '__init__.py'
+        init_file.touch(exist_ok=True)
+
 def check_dependencies():
     """Check if all required dependencies are installed"""
     required = {
         'discord.py': 'discord',
         'aiohttp': 'aiohttp',
-        'sqlite3': 'sqlite3'
+        'sqlite3': 'sqlite3',
+        'asyncio': 'asyncio'
     }
     
     missing = []
@@ -51,47 +92,54 @@ def check_dependencies():
         logger.info(f"pip install {' '.join(missing)}")
         sys.exit(1)
 
-def setup_project_structure():
-    """Create necessary directories and files"""
-    dirs = ['logs', 'ext', 'utils', 'cogs']
-    for directory in dirs:
-        Path(directory).mkdir(exist_ok=True)
-        init_file = Path(directory) / '__init__.py'
-        init_file.touch(exist_ok=True)
-
-# Check dependencies before proceeding
+# Check dependencies and setup structure first
 check_dependencies()
-
-# Create project structure
 setup_project_structure()
 
-# Now try importing local modules
+# Import constants first
+from ext.constants import (
+    COLORS,
+    MESSAGES,
+    BUTTON_IDS,
+    CACHE_TIMEOUT,
+    Stock,
+    Balance,
+    TransactionType,
+    Status,
+    CURRENCY_RATES,
+    UPDATE_INTERVAL,
+    EXTENSIONS,
+    LOGGING,
+    PATHS,
+    Database,
+    CommandCooldown
+)
+
+# Then import other modules
 try:
     from database import setup_database, get_connection
-    from utils.command_handler import AdvancedCommandHandler
     from ext.base_handler import BaseLockHandler, BaseResponseHandler
     from ext.cache_manager import CacheManager
-    from ext.constants import (
-        COLORS,
-        MESSAGES,
-        EXTENSIONS,
-        LOGGING,
-        PATHS
-    )
+    from utils.command_handler import AdvancedCommandHandler
 except ImportError as e:
     logger.critical(f"Failed to import required modules: {e}")
     logger.critical("Please ensure all required files are present and properly structured")
     sys.exit(1)
 
 # Setup enhanced logging
-log_dir = Path('logs')
+log_dir = Path(PATHS.LOGS)
 log_dir.mkdir(exist_ok=True)
 
 logging.basicConfig(
     level=logging.INFO,
     format=LOGGING.FORMAT,
     handlers=[
-        logging.FileHandler(log_dir / 'bot.log'),
+        RotatingFileHandler(
+            log_dir / 'bot.log',
+            maxBytes=LOGGING.MAX_BYTES,
+            backupCount=LOGGING.BACKUP_COUNT,
+            encoding='utf-8'
+        ),
         logging.StreamHandler()
     ]
 )
@@ -99,9 +147,13 @@ logging.basicConfig(
 def load_config():
     """Load and validate configuration"""
     required_keys = [
-        'token', 'guild_id', 'admin_id', 
-        'id_live_stock', 'id_log_purch',
-        'id_donation_log', 'id_history_buy'
+        'token', 
+        'guild_id', 
+        'admin_id', 
+        'id_live_stock',
+        'id_log_purch',
+        'id_donation_log', 
+        'id_history_buy'
     ]
     
     try:
@@ -112,7 +164,28 @@ def load_config():
         missing_keys = [key for key in required_keys if key not in config]
         if missing_keys:
             raise KeyError(f"Missing required config keys: {', '.join(missing_keys)}")
-            
+        
+        # Validate value types
+        int_keys = ['guild_id', 'admin_id', 'id_live_stock', 'id_log_purch', 
+                   'id_donation_log', 'id_history_buy']
+        
+        for key in int_keys:
+            try:
+                config[key] = int(config[key])
+            except (ValueError, TypeError):
+                raise ValueError(f"Invalid value for {key}. Expected integer.")
+                
+        # Set default values if not present
+        defaults = {
+            'cooldown_time': CommandCooldown.DEFAULT,
+            'max_items': Stock.MAX_ITEMS,
+            'cache_timeout': CACHE_TIMEOUT.get_seconds(CACHE_TIMEOUT.SHORT)
+        }
+        
+        for key, value in defaults.items():
+            if key not in config:
+                config[key] = value
+        
         return config
     except FileNotFoundError:
         logger.critical(f"Config file not found: {PATHS.CONFIG}")
@@ -122,112 +195,136 @@ def load_config():
         logger.critical(f"Invalid JSON in config file: {e}")
         sys.exit(1)
     except Exception as e:
-        logger.critical(f"Failed to load config: {e}")
-        raise
-
-class MyBot(commands.Bot, BaseLockHandler, BaseResponseHandler):
-    """Main bot class"""
-    
-    def __init__(self):
-        # Setup intents
-        intents = discord.Intents.all()
-        super().__init__(command_prefix='!', intents=intents)
-        BaseLockHandler.__init__(self)
-        
-        # Load configuration
-        self.config = config
-        self.session = None
-        
-        # Initialize IDs
-        try:
-            self.admin_id = int(config['admin_id'])
-            self.guild_id = int(config['guild_id'])
-            self.live_stock_channel_id = int(config['id_live_stock'])
-            self.log_purchase_channel_id = int(config['id_log_purch'])
-            self.donation_log_channel_id = int(config['id_donation_log'])
-            self.history_buy_channel_id = int(config['id_history_buy'])
-        except ValueError as e:
-            logger.critical(f"Invalid ID in config: {e}")
-            raise
-        
-        # Initialize components
-        self.startup_time = datetime.utcnow()
-        self.command_handler = AdvancedCommandHandler(self)
-        self.cache_manager = CacheManager()
-
-    async def setup_hook(self):
-        """Initialize bot components"""
-        self.session = aiohttp.ClientSession()
-        
-        # Load extensions
-        for ext_type, extensions in {
-            'Core': EXTENSIONS.CORE,
-            'Features': EXTENSIONS.FEATURES,
-            'Optional': EXTENSIONS.OPTIONAL
-        }.items():
-            logger.info(f"\nLoading {ext_type} extensions:")
-            for extension in extensions:
-                try:
-                    await self.load_extension(extension)
-                    logger.info(f"✓ {extension}")
-                except Exception as e:
-                    logger.error(f"✗ {extension}: {e}")
-
-    async def on_ready(self):
-        """Called when bot is ready"""
-        logger.info(f"\nLogged in as: {self.user.name} (ID: {self.user.id})")
-        logger.info(f"Guild ID: {self.guild_id}")
-        
-        # Set presence
-        await self.change_presence(
-            activity=discord.Activity(
-                type=discord.ActivityType.watching,
-                name="Growtopia Shop | !help"
-            ),
-            status=discord.Status.online
-        )
-        logger.info("Bot is ready!")
-
-    @commands.command(name="ping")
-    async def ping(self, ctx):
-        """Simple ping command to test bot responsiveness"""
-        await ctx.send(f"Pong! Latency: {round(self.latency * 1000)}ms")
-
-    async def close(self):
-        """Cleanup when bot shuts down"""
-        if self.session:
-            await self.session.close()
-        await super().close()
-
-async def main():
-    """Main entry point"""
-    try:
-        # Initialize database
-        setup_database()
-        
-        # Create and start bot
-        bot = MyBot()
-        async with bot:
-            await bot.start(TOKEN)
-    except Exception as e:
-        logger.critical(f"Fatal error: {e}")
-        raise
-
-if __name__ == "__main__":
-    # Load config first
-    try:
-        config = load_config()
-        TOKEN = config['token']
-    except Exception as e:
-        logger.critical(f"Failed to initialize: {e}")
+        logger.critical(f"Error loading config: {e}")
         sys.exit(1)
 
-    # Run the bot
+class StoreBot(commands.Bot):
+    def __init__(self):
+        intents = discord.Intents.default()
+        intents.message_content = True
+        intents.members = True
+        
+        super().__init__(
+            command_prefix='!',
+            intents=intents,
+            help_command=None
+        )
+        
+        self.config = load_config()
+        self.cache_manager = CacheManager()
+        self.start_time = datetime.utcnow()
+        self.maintenance_mode = False
+        self._ready = asyncio.Event()
+        
+    async def wait_until_ready(self) -> None:
+        """Override to ensure bot is fully ready"""
+        await super().wait_until_ready()
+        await self._ready.wait()
+        
+    async def setup_hook(self):
+        """Setup bot extensions and database"""
+        try:
+            # Setup database first
+            setup_database()
+            
+            # Load core extensions first
+            for ext in EXTENSIONS.CORE:
+                try:
+                    await self.load_extension(ext)
+                    logger.info(f"Loaded core extension: {ext}")
+                except Exception as e:
+                    logger.error(f"Failed to load core extension {ext}: {e}")
+                    await self.close()
+                    return
+            
+            # Load feature extensions
+            for ext in EXTENSIONS.FEATURES:
+                try:
+                    await self.load_extension(ext)
+                    logger.info(f"Loaded feature extension: {ext}")
+                except Exception as e:
+                    logger.error(f"Failed to load feature extension {ext}: {e}")
+            
+            # Load optional extensions
+            for ext in EXTENSIONS.OPTIONAL:
+                try:
+                    await self.load_extension(ext)
+                    logger.info(f"Loaded optional extension: {ext}")
+                except Exception as e:
+                    logger.warning(f"Failed to load optional extension {ext}: {e}")
+            
+            logger.info("Bot setup completed")
+        except Exception as e:
+            logger.critical(f"Failed to setup bot: {e}")
+            await self.close()
+    
+    async def on_ready(self):
+        """Called when bot is ready"""
+        if self._ready.is_set():
+            return
+            
+        logger.info(f"Logged in as {self.user.name} ({self.user.id})")
+        logger.info(f"Discord.py Version: {discord.__version__}")
+        
+        # Set bot status
+        activity = discord.Activity(
+            type=discord.ActivityType.watching,
+            name="Growtopia Shop 🏪"
+        )
+        await self.change_presence(activity=activity)
+        
+        # Clear expired cache
+        await self.cache_manager.clear_expired()
+        
+        # Signal bot is fully ready
+        self._ready.set()
+        
+    async def on_error(self, event_method: str, *args, **kwargs):
+        """Global error handler"""
+        exc_type, exc_value, exc_traceback = sys.exc_info()
+        logger.error(f"Error in {event_method}: {exc_type.__name__}: {exc_value}")
+        
+    async def close(self):
+        """Cleanup before closing"""
+        try:
+            # Cleanup tasks
+            if hasattr(self, 'cache_manager'):
+                await self.cache_manager.clear_all()
+            
+            # Cancel all tasks
+            tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+            [task.cancel() for task in tasks]
+            
+            await asyncio.gather(*tasks, return_exceptions=True)
+            await super().close()
+            
+        except Exception as e:
+            logger.error(f"Error during shutdown: {e}")
+        finally:
+            logger.info("Bot shutdown complete")
+
+async def run_bot():
+    """Run the bot"""
+    bot = StoreBot()
+    
     try:
-        asyncio.run(main())
+        async with bot:
+            await bot.start(bot.config['token'])
     except KeyboardInterrupt:
-        logger.info("\nBot stopped by user")
+        logger.info("Received keyboard interrupt")
+    except discord.LoginFailure:
+        logger.critical("Invalid bot token")
     except Exception as e:
-        logger.critical(f"Unexpected error: {e}")
-        logger.exception("Error details:")
+        logger.critical(f"Bot crashed: {e}")
+    finally:
+        if not bot.is_closed():
+            await bot.close()
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(run_bot())
+    except KeyboardInterrupt:
+        pass
+    except Exception as e:
+        logger.critical(f"Fatal error: {e}")
         sys.exit(1)
