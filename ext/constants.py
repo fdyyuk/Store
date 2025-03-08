@@ -84,35 +84,43 @@ class Balance:
         total = self.total_wl()
         return self.MIN_AMOUNT <= total <= self.MAX_AMOUNT
 
-# Extensions Configuration
 class EXTENSIONS:
-    # Core extensions yang wajib diload
-    CORE: List[str] = [
-        'ext.balance_manager',
-        'ext.product_manager',
-        'ext.trx'
+    # Core services harus diload pertama dan berurutan
+    SERVICES: List[str] = [
+        'ext.product_manager',    # Load 1st - independent
+        'ext.balance_manager',    # Load 2nd - depends on product_manager
+        'ext.trx'                # Load 3rd - depends on both above
     ]
     
-    # Fitur tambahan
+    # Core features yang bergantung pada services
     FEATURES: List[str] = [
-        'ext.live_buttons',
-        'ext.live_stock',
-        'ext.donate'
+        'ext.live_buttons',      # Depends on services
+        'ext.live_stock',        # Depends on product_manager
+        'ext.donate'             # Depends on balance_manager
     ]
     
-    # Extension opsional
-    OPTIONAL: List[str] = [
-        'cogs.admin',
+    # Cogs yang menggunakan services - load terakhir
+    COGS: List[str] = [
         'cogs.stats',
         'cogs.automod',
         'cogs.tickets',
-        'cogs.welcome',
-        'cogs.leveling'
+        'cogs.welcome', 
+        'cogs.leveling',
+        'cogs.admin'            # Admin paling terakhir karena bergantung pada semua service
     ]
     
-    # Daftar semua extensions
-    ALL: List[str] = CORE + FEATURES + OPTIONAL
-
+    # Urutan loading yang benar
+    ALL: List[str] = SERVICES + FEATURES + COGS
+    
+    @classmethod
+    def verify_loaded(cls, bot) -> bool:
+        """Verifikasi semua service sudah terload dengan benar"""
+        required_services = [
+            'ProductManagerCog',
+            'BalanceManagerCog', 
+            'TransactionCog'
+        ]
+        return all(bot.get_cog(service) for service in required_services)
 # Currency Settings
 class CURRENCY_RATES:
     # Base rates (in WL)
