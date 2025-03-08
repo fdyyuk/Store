@@ -1,16 +1,25 @@
+"""
+Balance Manager Service
+Author: fdyyuk
+Created at: 2025-03-07 18:04:56 UTC
+Last Modified: 2025-03-08 05:39:58 UTC
+"""
+
 import logging
 import asyncio
-from typing import Dict, Optional
+from typing import Dict, Optional, Union
 from datetime import datetime
 
 import discord
 from discord.ext import commands
 
 from .constants import (
-    Balance,         # Untuk manajemen balance
-    TransactionError,# Untuk error handling
-    CURRENCY_RATES, # Untuk konversi mata uang
-    CACHE_TIMEOUT  # Untuk cache timeout
+    Balance,         # Update: menggunakan Balance class yang baru
+    TransactionType,
+    TransactionError,
+    CURRENCY_RATES,
+    MESSAGES,
+    CACHE_TIMEOUT
 )
 from database import get_connection
 from .base_handler import BaseLockHandler
@@ -59,7 +68,11 @@ class BalanceManagerService(BaseLockHandler):
             if result:
                 growid = result['growid']
                 # Cache GrowID for 1 hour since it rarely changes
-                await self.cache_manager.set(cache_key, growid, expires_in=3600)
+                await self.cache_manager.set(
+                    cache_key, 
+                    growid,
+                    expires_in=CACHE_TIMEOUT.get_seconds(CACHE_TIMEOUT.LONG)
+                )
                 self.logger.info(f"Found GrowID for Discord ID {discord_id}: {growid}")
                 return growid
             return None
@@ -92,7 +105,11 @@ class BalanceManagerService(BaseLockHandler):
             if result:
                 discord_id = result['discord_id']
                 # Cache Discord ID for 1 hour
-                await self.cache_manager.set(cache_key, discord_id, expires_in=3600)
+                await self.cache_manager.set(
+                    cache_key, 
+                    discord_id,
+                    expires_in=CACHE_TIMEOUT.get_seconds(CACHE_TIMEOUT.LONG)
+                )
                 return discord_id
             return None
 
@@ -105,9 +122,12 @@ class BalanceManagerService(BaseLockHandler):
 
     async def register_user(self, discord_id: str, growid: str) -> bool:
         """Register user with proper locking"""
+        if not growid or len(growid) < 3:
+            raise ValueError(MESSAGES.ERROR['INVALID_GROWID'])
+            
         lock = await self.acquire_lock(f"register_{discord_id}")
         if not lock:
-            raise TransactionError("System is busy, please try again later")
+            raise TransactionError(MESSAGES.ERROR['TRANSACTION_FAILED'])
 
         conn = None
         try:
@@ -121,28 +141,42 @@ class BalanceManagerService(BaseLockHandler):
             )
             existing = cursor.fetchone()
             if existing and existing['growid'] != growid:
-                raise ValueError(f"GrowID already exists with different case: {existing['growid']}")
+                raise ValueError(MESSAGES.ERROR['GROWID_EXISTS'])
             
             # Begin transaction
             conn.execute("BEGIN TRANSACTION")
             
-            # Create user if not exists
+            # Create user if not exists with initial balance
             cursor.execute(
-                "INSERT OR IGNORE INTO users (growid) VALUES (?)",
+                """
+                INSERT OR IGNORE INTO users (growid, balance_wl, balance_dl, balance_bgl) 
+                VALUES (?, 0, 0, 0)
+                """,
                 (growid,)
             )
             
             # Link Discord ID to GrowID
             cursor.execute(
-                "INSERT OR REPLACE INTO user_growid (discord_id, growid) VALUES (?, ?)",
+                """
+                INSERT OR REPLACE INTO user_growid (discord_id, growid) 
+                VALUES (?, ?)
+                """,
                 (str(discord_id), growid)
             )
             
             conn.commit()
             
             # Update caches
-            await self.cache_manager.set(f"growid_{discord_id}", growid, expires_in=3600)
-            await self.cache_manager.set(f"discord_id_{growid}", discord_id, expires_in=3600)
+            await self.cache_manager.set(
+                f"growid_{discord_id}", 
+                growid,
+                expires_in=CACHE_TIMEOUT.get_seconds(CACHE_TIMEOUT.LONG)
+            )
+            await self.cache_manager.set(
+                f"discord_id_{growid}", 
+                discord_id,
+                expires_in=CACHE_TIMEOUT.get_seconds(CACHE_TIMEOUT.LONG)
+            )
             await self.cache_manager.delete(f"balance_{growid}")
             
             self.logger.info(f"Registered Discord user {discord_id} with GrowID {growid}")
@@ -163,6 +197,7 @@ class BalanceManagerService(BaseLockHandler):
         cache_key = f"balance_{growid}"
         cached = await self.cache_manager.get(cache_key)
         if cached:
+            # Convert cached dict to Balance object if needed
             if isinstance(cached, dict):
                 return Balance(cached['wl'], cached['dl'], cached['bgl'])
             return cached
@@ -193,7 +228,11 @@ class BalanceManagerService(BaseLockHandler):
                     result['balance_bgl']
                 )
                 # Cache balance for 30 seconds since it changes frequently
-                await self.cache_manager.set(cache_key, balance, expires_in=30)
+                await self.cache_manager.set(
+                    cache_key, 
+                    balance,
+                    expires_in=CACHE_TIMEOUT.get_seconds(CACHE_TIMEOUT.SHORT)
+                )
                 return balance
             return None
 
@@ -217,109 +256,96 @@ class BalanceManagerService(BaseLockHandler):
         """Update balance with proper locking and validation"""
         lock = await self.acquire_lock(f"balance_update_{growid}")
         if not lock:
-            raise TransactionError("System is busy, please try again later")
+            raise TransactionError(MESSAGES.ERROR['TRANSACTION_FAILED'])
 
         conn = None
         try:
+            # Get current balance with retry
+            current_balance = await self.get_balance(growid)
+            if not current_balance:
+                raise TransactionError(MESSAGES.ERROR['BALANCE_NOT_FOUND'])
+
+            # Calculate new balance
+            new_wl = max(0, current_balance.wl + wl)
+            new_dl = max(0, current_balance.dl + dl)
+            new_bgl = max(0, current_balance.bgl + bgl)
+            
+            # Create new balance object
+            new_balance = Balance(new_wl, new_dl, new_bgl)
+            
+            # Validate new balance
+            if not new_balance.validate():
+                raise TransactionError(MESSAGES.ERROR['INVALID_AMOUNT'])
+
+            # Additional validation for withdrawals
+            if wl < 0 and abs(wl) > current_balance.wl:
+                raise TransactionError(MESSAGES.ERROR['INSUFFICIENT_BALANCE'])
+            if dl < 0 and abs(dl) > current_balance.dl:
+                raise TransactionError(MESSAGES.ERROR['INSUFFICIENT_BALANCE'])
+            if bgl < 0 and abs(bgl) > current_balance.bgl:
+                raise TransactionError(MESSAGES.ERROR['INSUFFICIENT_BALANCE'])
+
             conn = get_connection()
             cursor = conn.cursor()
             
-            # Get current balance with retry
-            for attempt in range(3):
-                try:
-                    cursor.execute(
-                        """
-                        SELECT balance_wl, balance_dl, balance_bgl 
-                        FROM users 
-                        WHERE growid = ? COLLATE binary
-                        """,
-                        (growid,)
+            try:
+                # Begin transaction
+                conn.execute("BEGIN TRANSACTION")
+                
+                # Update balance
+                cursor.execute(
+                    """
+                    UPDATE users 
+                    SET balance_wl = ?, balance_dl = ?, balance_bgl = ?,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE growid = ? COLLATE binary
+                    """,
+                    (new_wl, new_dl, new_bgl, growid)
+                )
+                
+                # Record transaction
+                cursor.execute(
+                    """
+                    INSERT INTO transactions 
+                    (growid, type, details, old_balance, new_balance, created_at)
+                    VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    """,
+                    (
+                        growid,
+                        transaction_type,
+                        details,
+                        current_balance.format(),
+                        new_balance.format()
                     )
-                    current = cursor.fetchone()
-                    if current:
-                        break
-                    if attempt == 2:  # Last attempt
-                        raise TransactionError(f"User {growid} not found")
-                    await asyncio.sleep(0.1)  # Short delay before retry
-                except Exception as e:
-                    if attempt == 2:  # Last attempt
-                        raise
-                    await asyncio.sleep(0.1)
-            
-            old_balance = Balance(
-                current['balance_wl'],
-                current['balance_dl'],
-                current['balance_bgl']
-            )
-            
-            # Calculate new balance with validation
-            new_wl = max(0, current['balance_wl'] + wl)
-            new_dl = max(0, current['balance_dl'] + dl)
-            new_bgl = max(0, current['balance_bgl'] + bgl)
-            
-            # Additional validation
-            if wl < 0 and abs(wl) > current['balance_wl']:
-                raise TransactionError("Insufficient WL balance")
-            if dl < 0 and abs(dl) > current['balance_dl']:
-                raise TransactionError("Insufficient DL balance")
-            if bgl < 0 and abs(bgl) > current['balance_bgl']:
-                raise TransactionError("Insufficient BGL balance")
-            
-            # Update balance
-            cursor.execute(
-                """
-                UPDATE users 
-                SET balance_wl = ?, balance_dl = ?, balance_bgl = ?,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE growid = ? COLLATE binary
-                """,
-                (new_wl, new_dl, new_bgl, growid)
-            )
-            
-            new_balance = Balance(new_wl, new_dl, new_bgl)
-            
-            # Record transaction with retry
-            for attempt in range(3):
-                try:
-                    cursor.execute(
-                        """
-                        INSERT INTO transactions 
-                        (growid, type, details, old_balance, new_balance, created_at) 
-                        VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                        """,
-                        (
-                            growid,
-                            transaction_type,
-                            details,
-                            old_balance.format(),
-                            new_balance.format()
-                        )
-                    )
-                    break
-                except Exception as e:
-                    if attempt == 2:  # Last attempt
-                        raise
-                    await asyncio.sleep(0.1)
-            
-            conn.commit()
-            
-            # Update cache with new balance
-            await self.cache_manager.set(f"balance_{growid}", new_balance, expires_in=30)
-            
-            # Also invalidate any transaction history caches
-            await self.cache_manager.delete(f"trx_history_{growid}")
-            
-            self.logger.info(
-                f"Updated balance for {growid}: "
-                f"{old_balance.format()} -> {new_balance.format()}"
-            )
-            return new_balance
+                )
+                
+                conn.commit()
+                
+                # Update cache
+                await self.cache_manager.set(
+                    f"balance_{growid}", 
+                    new_balance,
+                    expires_in=CACHE_TIMEOUT.get_seconds(CACHE_TIMEOUT.SHORT)
+                )
+                
+                # Invalidate transaction history cache
+                await self.cache_manager.delete(f"trx_history_{growid}")
+                
+                self.logger.info(
+                    f"Updated balance for {growid}: "
+                    f"{current_balance.format()} -> {new_balance.format()}"
+                )
+                return new_balance
 
+            except Exception as e:
+                conn.rollback()
+                raise TransactionError(str(e))
+
+        except TransactionError:
+            raise
         except Exception as e:
             self.logger.error(f"Error updating balance: {e}")
-            if conn:
-                conn.rollback()
-            raise
+            raise TransactionError(MESSAGES.ERROR['TRANSACTION_FAILED'])
         finally:
             if conn:
                 conn.close()
@@ -345,8 +371,12 @@ class BalanceManagerService(BaseLockHandler):
             
             transactions = [dict(row) for row in cursor.fetchall()]
             
-            # Cache full history for 1 minute
-            await self.cache_manager.set(cache_key, transactions, expires_in=60)
+            # Cache for a short time since this changes frequently
+            await self.cache_manager.set(
+                cache_key, 
+                transactions,
+                expires_in=CACHE_TIMEOUT.get_seconds(CACHE_TIMEOUT.SHORT)
+            )
             
             return transactions
 
