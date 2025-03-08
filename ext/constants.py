@@ -190,13 +190,38 @@ class MESSAGES:
     }
 
 # Button IDs
+# Perbaikan untuk class BUTTON_IDS
 class BUTTON_IDS:
+    # Basic Buttons
     CONFIRM = "confirm_{}"
     CANCEL = "cancel_{}"
-    BUY = "buy_{}"
+    BUY = "buy"  # Diubah dari "buy_{}" ke "buy" untuk konsistensi
     DONATE = "donate"
     REFRESH = "refresh"
-
+    
+    # Shop Buttons
+    REGISTER = "register"
+    BALANCE = "balance"
+    WORLD_INFO = "world_info"
+    CONFIRM_PURCHASE = "confirm_purchase"
+    CANCEL_PURCHASE = "cancel_purchase"
+    HISTORY = "history"
+    
+    @classmethod
+    def get_purchase_confirmation_id(cls, product_code: str) -> str:
+        """Generate ID untuk konfirmasi pembelian"""
+        return f"{cls.CONFIRM_PURCHASE}_{product_code}"
+        
+    @classmethod
+    def get_confirm_id(cls, action_id: str) -> str:
+        """Generate ID untuk konfirmasi umum"""
+        return cls.CONFIRM.format(action_id)
+        
+    @classmethod
+    def get_cancel_id(cls, action_id: str) -> str:
+        """Generate ID untuk pembatalan umum"""
+        return cls.CANCEL.format(action_id)
+        
 # Update Intervals (in seconds)
 class UPDATE_INTERVAL:
     LIVE_STOCK = 55.0    # Update live stock every 55 seconds
