@@ -185,7 +185,7 @@ class CacheManager:
             self.logger.error(f"Error deleting from cache: {e}")
             raise
 
-    async def clear(self):
+    async def clear_all(self):
         """Clear all cache"""
         try:
             # Clear memory cache
