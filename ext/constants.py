@@ -2,7 +2,7 @@
 Constants for Store DC Bot
 Author: fdyyuk
 Created at: 2025-03-07 18:04:56 UTC
-Last Modified: 2025-03-08 05:28:44 UTC
+Last Modified: 2025-03-08 14:28:37 UTC
 """
 
 import discord
@@ -121,6 +121,7 @@ class EXTENSIONS:
             'TransactionCog'
         ]
         return all(bot.get_cog(service) for service in required_services)
+
 # Currency Settings
 class CURRENCY_RATES:
     # Base rates (in WL)
@@ -193,15 +194,18 @@ class Stock:
     MAX_STOCK = 999999
     MIN_STOCK = 0
 
-# Discord Colors
+# Discord Colors - Updated with new colors
 class COLORS:
     SUCCESS = discord.Color.green()
     ERROR = discord.Color.red()
     WARNING = discord.Color.yellow()
     INFO = discord.Color.blue()
     DEFAULT = discord.Color.blurple()
+    SHOP = discord.Color.purple()      # New
+    ADMIN = discord.Color.dark_grey()  # New
+    PRODUCT = discord.Color.teal()     # New
 
-# Message Templates
+# Message Templates - Updated with new messages
 class MESSAGES:
     SUCCESS = {
         'PURCHASE': "✅ Pembelian berhasil!\nDetail pembelian:",
@@ -209,7 +213,12 @@ class MESSAGES:
         'DONATION': "✅ Donasi berhasil diterima!",
         'BALANCE_UPDATE': "✅ Balance berhasil diupdate!",
         'REGISTRATION': "✅ Registrasi berhasil! GrowID: {growid}",
-        'WORLD_UPDATE': "✅ World info berhasil diupdate!"
+        'WORLD_UPDATE': "✅ World info berhasil diupdate!",
+        'PRODUCT_CREATED': "✅ Product created successfully.",      # New
+        'PRODUCT_UPDATED': "✅ Product updated successfully.",      # New
+        'PRODUCT_DELETED': "✅ Product deleted successfully.",      # New
+        'STOCK_SOLD': "✅ Stock sold successfully.",               # New
+        'CACHE_CLEARED': "✅ Cache cleared successfully."          # New
     }
     
     ERROR = {
@@ -227,7 +236,12 @@ class MESSAGES:
         'NO_HISTORY': "❌ Tidak ada riwayat transaksi!",
         'INVALID_GROWID': "❌ GrowID tidak valid!",
         'PRODUCT_NOT_FOUND': "❌ Produk tidak ditemukan!",
-        'INSUFFICIENT_STOCK': "❌ Stock tidak mencukupi!"
+        'INSUFFICIENT_STOCK': "❌ Stock tidak mencukupi!",
+        'INVALID_PRODUCT_CODE': "❌ Invalid product code format.",        # New
+        'PRODUCT_EXISTS': "❌ Product with this code already exists.",    # New
+        'CACHE_ERROR': "❌ Error accessing cache. Please try again.",     # New
+        'DATABASE_ERROR': "❌ Database error occurred. Please try again.", # New
+        'LOCK_ACQUISITION_FAILED': "❌ Could not acquire lock. Please try again." # New
     }
     
     INFO = {
@@ -236,7 +250,56 @@ class MESSAGES:
         'COOLDOWN': "⏳ Mohon tunggu {time} detik"
     }
 
-# Button IDs
+# Product Manager Constants (New)
+class PRODUCT_CONSTANTS:
+    """Konstanta khusus untuk product manager"""
+    MAX_NAME_LENGTH = 50
+    MAX_CODE_LENGTH = 20
+    MAX_DESCRIPTION_LENGTH = 200
+    MIN_PRICE = 1
+    CACHE_PREFIX = "product_"
+    DEFAULT_SORT = "code"
+    VALID_SORT_FIELDS = ["code", "name", "price"]
+
+# Event Types for Callback System (New)
+class EVENTS:
+    """Event types untuk callback system"""
+    PRODUCT = {
+        'CREATED': 'product_created',
+        'UPDATED': 'product_updated',
+        'DELETED': 'product_deleted',
+        'VIEWED': 'product_viewed'
+    }
+    
+    STOCK = {
+        'ADDED': 'stock_added',
+        'UPDATED': 'stock_updated',
+        'SOLD': 'stock_sold',
+        'LOW': 'stock_low'
+    }
+    
+    WORLD = {
+        'UPDATED': 'world_updated',
+        'ACCESSED': 'world_accessed'
+    }
+    
+    SYSTEM = {
+        'ERROR': 'error',
+        'WARNING': 'warning',
+        'INFO': 'info',
+        'DEBUG': 'debug'
+    }
+
+# Permission Levels (New)
+class PERMISSIONS:
+    """Permission levels untuk product manager"""
+    VIEW = 0      # Can view products and stock
+    PURCHASE = 1  # Can purchase products
+    STOCK = 2     # Can manage stock
+    ADMIN = 3     # Can manage products and settings
+    OWNER = 4     # Full access
+
+# Button IDs (Existing)
 class BUTTON_IDS:
     # Basic Buttons
     CONFIRM = "confirm_{}"
@@ -268,14 +331,14 @@ class BUTTON_IDS:
         """Generate ID untuk pembatalan umum"""
         return cls.CANCEL.format(action_id)
 
-# Update Intervals (in seconds)
+# Update Intervals (Existing)
 class UPDATE_INTERVAL:
     LIVE_STOCK = 55.0    # Update live stock every 55 seconds
     BUTTONS = 30.0       # Update buttons every 30 seconds
     CACHE = 300.0        # Cache timeout 5 minutes
     STATUS = 15.0        # Status update every 15 seconds
 
-# Cache Settings
+# Cache Settings (Existing)
 class CACHE_TIMEOUT:
     SHORT = timedelta(minutes=5)      # 5 menit
     MEDIUM = timedelta(hours=1)       # 1 jam
@@ -287,14 +350,14 @@ class CACHE_TIMEOUT:
         """Convert timedelta ke detik"""
         return int(timeout.total_seconds())
 
-# Command Cooldowns (in seconds)
+# Command Cooldowns (Existing)
 class CommandCooldown:
     DEFAULT = 3
     PURCHASE = 5
     ADMIN = 2
     DONATE = 10
 
-# Database Settings
+# Database Settings (Existing)
 class Database:
     TIMEOUT = 5
     MAX_CONNECTIONS = 5
@@ -302,7 +365,7 @@ class Database:
     RETRY_DELAY = 1
     BACKUP_INTERVAL = 86400  # 24 hours
 
-# Paths Configuration
+# Paths Configuration (Existing)
 class PATHS:
     CONFIG = "config.json"
     LOGS = "logs/"
@@ -310,7 +373,7 @@ class PATHS:
     BACKUP = "backups/"
     TEMP = "temp/"
 
-# Logging Configuration
+# Logging Configuration (Existing)
 class LOGGING:
     FORMAT = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     DATE_FORMAT = '%Y-%m-%d %H:%M:%S'
@@ -329,3 +392,34 @@ class InsufficientBalanceError(TransactionError):
 class OutOfStockError(TransactionError):
     """Raised when item is out of stock"""
     pass
+
+# Product Manager Exceptions (New)
+class ProductError(Exception):
+    """Base exception for product related errors"""
+    pass
+
+class ProductNotFoundError(ProductError):
+    """Raised when product is not found"""
+    pass
+
+class InvalidProductCodeError(ProductError):
+    """Raised when product code is invalid"""
+    pass
+
+class StockLimitError(ProductError):
+    """Raised when stock limit is reached"""
+    pass
+
+class LockError(Exception):
+    """Raised when lock acquisition fails"""
+    pass
+
+# Notification Channel IDs for Product Manager (New)
+class NOTIFICATION_CHANNELS:
+    """Channel IDs untuk notifikasi sistem"""
+    TRANSACTIONS = 0      # Ganti dengan ID channel transaksi
+    PRODUCT_LOGS = 0     # Ganti dengan ID channel product logs
+    STOCK_LOGS = 0       # Ganti dengan ID channel stock logs
+    ADMIN_LOGS = 0       # Ganti dengan ID channel admin logs
+    ERROR_LOGS = 0       # Ganti dengan ID channel error logs
+    SHOP = 0            # Ganti dengan ID channel shop
