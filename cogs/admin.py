@@ -65,7 +65,7 @@ class AdminCog(commands.Cog, BaseLockHandler, BaseResponseHandler):
             embed = discord.Embed(
                 title="❌ Access Denied",
                 description="```diff\n- You don't have permission to use admin commands!```",
-                color=COLORS['error']
+                color=COLORS.ERROR
             )
             await self.send_response_once(ctx, embed=embed)
             self.logger.warning(
@@ -88,7 +88,7 @@ class AdminCog(commands.Cog, BaseLockHandler, BaseResponseHandler):
                 embed=discord.Embed(
                     title="⏳ System Busy",
                     description="```diff\n- System is busy, please try again later```",
-                    color=COLORS['warning']
+                    color=COLORS.WARNING
                 )
             )
             return False
@@ -113,7 +113,7 @@ class AdminCog(commands.Cog, BaseLockHandler, BaseResponseHandler):
             error_embed = discord.Embed(
                 title="❌ Error Occurred",
                 description=f"```diff\n- {str(e)}```",
-                color=COLORS['error']
+                color=COLORS.ERROR
             )
             await self.send_response_once(ctx, embed=error_embed)
             return False
@@ -151,7 +151,7 @@ class AdminCog(commands.Cog, BaseLockHandler, BaseResponseHandler):
         embed = discord.Embed(
             title="⚠️ Confirmation Required",
             description=message,
-            color=COLORS['warning']
+            color=COLORS.WARNING
         )
         confirm_msg = await ctx.send(embed=embed)
         
@@ -171,7 +171,7 @@ class AdminCog(commands.Cog, BaseLockHandler, BaseResponseHandler):
                 embed=discord.Embed(
                     title="⏰ Timeout",
                     description="```diff\n- Operation cancelled due to timeout```",
-                    color=COLORS['error']
+                    color=COLORS.ERROR
                 )
             )
             return False
@@ -183,7 +183,7 @@ class AdminCog(commands.Cog, BaseLockHandler, BaseResponseHandler):
             embed = discord.Embed(
                 title="🛠️ Admin Commands",
                 description="Available administrative commands",
-                color=COLORS['blue'],
+                color=COLORS.DEFAULT,
                 timestamp=datetime.utcnow()
             )
 
@@ -245,7 +245,7 @@ class AdminCog(commands.Cog, BaseLockHandler, BaseResponseHandler):
             
             embed = discord.Embed(
                 title="✅ World Added",
-                color=COLORS['success'],
+                color=COLORS.SUCCESS,
                 timestamp=datetime.utcnow()
             )
             
@@ -281,7 +281,7 @@ class AdminCog(commands.Cog, BaseLockHandler, BaseResponseHandler):
             
             embed = discord.Embed(
                 title="✅ Product Added",
-                color=COLORS['success'],
+                color=COLORS.SUCCESS,
                 timestamp=datetime.utcnow()
             )
             
@@ -361,7 +361,7 @@ class AdminCog(commands.Cog, BaseLockHandler, BaseResponseHandler):
             # Create result embed
             embed = discord.Embed(
                 title="✅ Stock Added",
-                color=COLORS['success'],
+                color=COLORS.SUCCESS,
                 timestamp=datetime.utcnow()
             )
             
@@ -416,12 +416,12 @@ class AdminCog(commands.Cog, BaseLockHandler, BaseResponseHandler):
                 growid=growid,
                 wl=wls,
                 details=f"Added by admin {ctx.author}",
-                transaction_type=TRANSACTION_TYPES['ADMIN_ADD']
+                transaction_type=TransactionType.ADMIN_ADD
             )
 
             embed = discord.Embed(
                 title="✅ Balance Added",
-                color=COLORS['success'],
+                color=COLORS.SUCCESS,
                 timestamp=datetime.utcnow()
             )
             
@@ -464,12 +464,12 @@ class AdminCog(commands.Cog, BaseLockHandler, BaseResponseHandler):
                 growid=growid,
                 wl=wls,
                 details=f"Removed by admin {ctx.author}",
-                transaction_type=TRANSACTION_TYPES['ADMIN_REMOVE']
+                transaction_type=TransactionType.ADMIN_REMOVE
             )
 
             embed = discord.Embed(
                 title="✅ Balance Removed",
-                color=COLORS['error'],
+                color=COLORS.ERROR,
                 timestamp=datetime.utcnow()
             )
             
@@ -553,12 +553,12 @@ class AdminCog(commands.Cog, BaseLockHandler, BaseResponseHandler):
                 dl=-current_balance.dl,
                 bgl=-current_balance.bgl,
                 details=f"Balance reset by admin {ctx.author}",
-                transaction_type=TRANSACTION_TYPES['ADMIN_RESET']
+                transaction_type=TransactionType.ADMIN_RESET
             )
 
             embed = discord.Embed(
                 title="✅ Balance Reset",
-                color=COLORS['error'],
+                color=COLORS.ERROR,
                 timestamp=datetime.utcnow()
             )
             
@@ -598,7 +598,7 @@ class AdminCog(commands.Cog, BaseLockHandler, BaseResponseHandler):
             
             embed = discord.Embed(
                 title="🤖 System Information",
-                color=COLORS['info'],
+                color=COLORS.INFO,
                 timestamp=datetime.utcnow()
             )
             
@@ -665,7 +665,7 @@ class AdminCog(commands.Cog, BaseLockHandler, BaseResponseHandler):
             embed = discord.Embed(
                 title="📢 Announcement",
                 description=message,
-                color=COLORS['warning'],
+                color=COLORS.WARNING,
                 timestamp=datetime.utcnow()
             )
             embed.set_footer(text=f"Sent by {ctx.author}")
@@ -705,7 +705,7 @@ class AdminCog(commands.Cog, BaseLockHandler, BaseResponseHandler):
 
             result_embed = discord.Embed(
                 title="📢 Announcement Results",
-                color=COLORS['success'],
+                color=COLORS.SUCCESS,
                 timestamp=datetime.utcnow()
             )
             
@@ -756,7 +756,7 @@ class AdminCog(commands.Cog, BaseLockHandler, BaseResponseHandler):
                         f"Maintenance mode has been turned "
                         f"**{mode_lower.upper()}**"
                     ),
-                    color=COLORS['warning'] if mode_lower == "on" else COLORS['success'],
+                    color=COLORS.WARNING if mode_lower == "on" else COLORS.SUCCESS,
                     timestamp=datetime.utcnow()
                 )
                 embed.set_footer(text=f"Changed by {ctx.author}")
@@ -778,7 +778,7 @@ class AdminCog(commands.Cog, BaseLockHandler, BaseResponseHandler):
                                                 "Some features may be unavailable. "
                                                 "We'll notify you when service is restored."
                                             ),
-                                            color=COLORS['warning']
+                                            color=COLORS.WARNING
                                         )
                                     )
                                 except Exception as e:
@@ -846,7 +846,7 @@ class AdminCog(commands.Cog, BaseLockHandler, BaseResponseHandler):
                         f"{'added to' if action_lower == 'add' else 'removed from'} "
                         f"the blacklist."
                     ),
-                    color=COLORS['error'] if action_lower == 'add' else COLORS['success'],
+                    color=COLORS.ERROR if action_lower == 'add' else COLORS.SUCCESS,
                     timestamp=datetime.utcnow()
                 )
                 embed.set_footer(text=f"Updated by {ctx.author}")
@@ -881,7 +881,7 @@ class AdminCog(commands.Cog, BaseLockHandler, BaseResponseHandler):
                 # Create backup info embed
                 embed = discord.Embed(
                     title="💾 Database Backup",
-                    color=COLORS['success'],
+                    color=COLORS.SUCCESS,
                     timestamp=datetime.utcnow()
                 )
                 
