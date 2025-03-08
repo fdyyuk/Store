@@ -94,8 +94,9 @@ class EXTENSIONS:
     
     # Core features yang bergantung pada services
     FEATURES: List[str] = [
-        'ext.live_buttons',      # Depends on services
+        'ext.admin_service',
         'ext.live_stock',        # Depends on product_manager
+        'ext.live_buttons',      # Depends on services
         'ext.donate'             # Depends on balance_manager
     ]
     
@@ -121,7 +122,14 @@ class EXTENSIONS:
             'TransactionCog'
         ]
         return all(bot.get_cog(service) for service in required_services)
-
+    COG_LOADED = {
+    'PRODUCT': 'product_manager_loaded',
+    'BALANCE': 'balance_manager_loaded',
+    'TRANSACTION': 'transaction_manager_loaded',
+    'LIVE_STOCK': 'live_stock_loaded', 
+    'LIVE_BUTTONS': 'live_buttons_loaded',
+    'ADMIN': 'admin_service_loaded'
+}
 # Currency Settings
 class CURRENCY_RATES:
     # Base rates (in WL)
