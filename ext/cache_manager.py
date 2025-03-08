@@ -186,21 +186,24 @@ class CacheManager:
             raise
 
     async def clear_all(self):
-        """Clear all cache"""
+        """Clear all cache data"""
         try:
             # Clear memory cache
             self.memory_cache.clear()
             
-            # Clear database
-            async with self._lock:
-                conn = get_connection()
-                cursor = conn.cursor()
-                cursor.execute("DELETE FROM cache")
-                conn.commit()
-
+            # Clear database cache
+            conn = get_connection()
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM cache")
+            conn.commit()
+            
+            self.logger.info("Cache cleared successfully")
         except Exception as e:
             self.logger.error(f"Error clearing cache: {e}")
             raise
+        finally:
+            if 'conn' in locals():
+                conn.close()
 
     async def cleanup_expired(self):
         """Remove expired items from cache"""
