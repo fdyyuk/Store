@@ -1,3 +1,10 @@
+"""
+Enhanced Cache Manager with Database Integration
+Author: fdyyuk
+Created at: 2025-03-07 18:04:56 UTC
+Last Modified: 2025-03-08 05:42:06 UTC
+"""
+
 import logging
 import time
 import json
@@ -7,15 +14,46 @@ from sqlite3 import Connection, Error as SQLiteError
 from database import get_connection
 import asyncio
 from functools import wraps
+from .constants import CACHE_TIMEOUT, Balance
 
 logger = logging.getLogger(__name__)
 
+class CustomJSONEncoder(json.JSONEncoder):
+    """Custom JSON Encoder untuk menangani object khusus"""
+    def default(self, obj):
+        if isinstance(obj, Balance):
+            return {
+                '__class__': 'Balance',
+                'wl': obj.wl,
+                'dl': obj.dl,
+                'bgl': obj.bgl
+            }
+        if isinstance(obj, datetime):
+            return {'__datetime__': obj.isoformat()}
+        if isinstance(obj, timedelta):
+            return {'__timedelta__': obj.total_seconds()}
+        return super().default(obj)
+
+class CustomJSONDecoder(json.JSONDecoder):
+    """Custom JSON Decoder untuk mengembalikan object khusus"""
+    def __init__(self, *args, **kwargs):
+        super().__init__(object_hook=self.object_hook, *args, **kwargs)
+
+    def object_hook(self, obj):
+        if '__class__' in obj:
+            if obj['__class__'] == 'Balance':
+                return Balance(obj['wl'], obj['dl'], obj['bgl'])
+        if '__datetime__' in obj:
+            return datetime.fromisoformat(obj['__datetime__'])
+        if '__timedelta__' in obj:
+            return timedelta(seconds=obj['__timedelta__'])
+        return obj
+
 class CacheManager:
-    """
-    Enhanced Cache Manager dengan Database Integration
-    """
+    """Enhanced Cache Manager dengan Database Integration"""
     _instance = None
     _lock = asyncio.Lock()
+    MAX_MEMORY_ITEMS = 10000  # Batasan item di memory
     
     def __new__(cls):
         if cls._instance is None:
@@ -28,10 +66,19 @@ class CacheManager:
             self.logger = logging.getLogger('CacheManager')
             self.initialized = True
     
+    async def _enforce_memory_limit(self):
+        """Enforce memory cache size limit"""
+        if len(self.memory_cache) > self.MAX_MEMORY_ITEMS:
+            # Hapus 10% item terlama
+            items_to_remove = sorted(
+                self.memory_cache.items(),
+                key=lambda x: x[1]['expires_at']
+            )[:int(self.MAX_MEMORY_ITEMS * 0.1)]
+            for key, _ in items_to_remove:
+                del self.memory_cache[key]
+    
     async def get(self, key: str, default: Any = None) -> Optional[Any]:
-        """
-        Ambil data dari cache (memory atau database)
-        """
+        """Ambil data dari cache (memory atau database)"""
         try:
             # Cek memory cache dulu
             if key in self.memory_cache:
@@ -61,12 +108,16 @@ class CacheManager:
                         if expires_at > datetime.utcnow():
                             # Cache masih valid
                             try:
-                                decoded_value = json.loads(value)
+                                decoded_value = json.loads(
+                                    value,
+                                    cls=CustomJSONDecoder
+                                )
                                 # Simpan ke memory cache
                                 self.memory_cache[key] = {
                                     'value': decoded_value,
                                     'expires_at': expires_at
                                 }
+                                await self._enforce_memory_limit()
                                 self.logger.debug(f"Cache hit (database): {key}")
                                 return decoded_value
                             except json.JSONDecodeError:
@@ -92,7 +143,7 @@ class CacheManager:
     async def set(self, 
                   key: str, 
                   value: Any, 
-                  expires_in: int = 3600,
+                  expires_in: Optional[int] = None,
                   permanent: bool = False) -> bool:
         """
         Simpan data ke cache
@@ -100,10 +151,14 @@ class CacheManager:
         Args:
             key: Kunci cache
             value: Nilai yang akan disimpan
-            expires_in: Waktu kadaluarsa dalam detik (default 1 jam)
-            permanent: Jika True, simpan ke database (default False)
+            expires_in: Waktu kadaluarsa dalam detik (None untuk permanent)
+            permanent: Jika True, simpan ke database
         """
         try:
+            # Handle permanent cache
+            if expires_in is None:
+                expires_in = CACHE_TIMEOUT.get_seconds(CACHE_TIMEOUT.PERMANENT)
+                
             expires_at = datetime.utcnow() + timedelta(seconds=expires_in)
             
             # Simpan ke memory cache
@@ -111,6 +166,7 @@ class CacheManager:
                 'value': value,
                 'expires_at': expires_at
             }
+            await self._enforce_memory_limit()
             
             # Jika permanent, simpan juga ke database
             if permanent:
@@ -119,14 +175,13 @@ class CacheManager:
                     try:
                         cursor = conn.cursor()
                         
-                        # Konversi value ke JSON jika perlu
-                        if not isinstance(value, (str, int, float, bool)):
-                            value = json.dumps(value)
+                        # Konversi value ke JSON dengan custom encoder
+                        json_value = json.dumps(value, cls=CustomJSONEncoder)
                             
                         cursor.execute("""
                             INSERT OR REPLACE INTO cache_table (key, value, expires_at)
                             VALUES (?, ?, ?)
-                        """, (key, value, expires_at.isoformat()))
+                        """, (key, json_value, expires_at.isoformat()))
                         
                         conn.commit()
                         self.logger.debug(f"Cache set (permanent): {key}")
@@ -270,13 +325,13 @@ class CacheManager:
             return {}
 
 # Decorator untuk caching
-def cached(expires_in: int = 3600, permanent: bool = False):
+def cached(expires_in: Optional[int] = None, permanent: bool = False):
     """
     Decorator untuk caching fungsi
     
     Args:
-        expires_in: Waktu kadaluarsa dalam detik (default 1 jam)
-        permanent: Jika True, simpan ke database (default False)
+        expires_in: Waktu kadaluarsa dalam detik (None untuk menggunakan PERMANENT)
+        permanent: Jika True, simpan ke database
     """
     def decorator(func):
         @wraps(func)
