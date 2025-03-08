@@ -12,22 +12,22 @@ Dependencies:
 - ext.constants: For configuration and responses
 """
 
-import logging
-import asyncio
-from typing import Optional, Dict
-from datetime import datetime
-
 import discord
 from discord.ext import commands, tasks
+import logging
+import asyncio
+from datetime import datetime
+from typing import Optional, Dict
 
 from .constants import (
     COLORS,
+    MESSAGES,
     UPDATE_INTERVAL,
     CACHE_TIMEOUT,
     Stock,
     Status,
     CURRENCY_RATES,
-    MESSAGES
+    COG_LOADED
 )
 from .base_handler import BaseLockHandler
 from .cache_manager import CacheManager
@@ -247,6 +247,8 @@ class LiveStockManager(BaseLockHandler):
         except Exception as e:
             self.logger.error(f"Error in cleanup: {e}")
 
+
+@commands.Cog
 class LiveStockCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -255,13 +257,12 @@ class LiveStockCog(commands.Cog):
         self.update_stock.start()
 
     def cog_unload(self):
-        """Cleanup when cog is unloaded"""
         self.update_stock.cancel()
         asyncio.create_task(self.stock_manager.cleanup())
 
     @tasks.loop(seconds=UPDATE_INTERVAL.LIVE_STOCK)
     async def update_stock(self):
-        """Update stock display periodically dengan proper error handling"""
+        """Update stock display periodically"""
         try:
             await self.stock_manager.update_stock_display()
         except Exception as e:
@@ -269,32 +270,19 @@ class LiveStockCog(commands.Cog):
 
     @update_stock.before_loop
     async def before_update_stock(self):
-        """Wait until bot is ready before starting the loop"""
+        """Wait until bot is ready"""
         await self.bot.wait_until_ready()
-        self.logger.info(
-            f"Stock display started at: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC"
-        )
 
 async def setup(bot):
-    """Setup LiveStockCog dengan proper error handling"""
-    if not hasattr(bot, 'live_stock_loaded'):
+    """Setup cog dengan proper error handling"""
+    if not hasattr(bot, COG_LOADED['LIVE_STOCK']):
         try:
-            # Verify all required dependencies
-            required_dependencies = [
-                'product_manager_loaded',
-                'balance_manager_loaded',
-                'transaction_manager_loaded',
-                'admin_service_loaded'
-            ]
-            
-            for dependency in required_dependencies:
-                if not hasattr(bot, dependency):
-                    raise Exception(MESSAGES.ERROR['MISSING_DEPENDENCY'].format(dependency))
-                
             await bot.add_cog(LiveStockCog(bot))
-            bot.live_stock_loaded = True
-            logging.info(MESSAGES.SUCCESS['COG_LOADED'].format('LiveStock'))
-            
+            setattr(bot, COG_LOADED['LIVE_STOCK'], True)
+            logging.info(
+                f'LiveStock cog loaded successfully at '
+                f'{datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")} UTC'
+            )
         except Exception as e:
-            logging.error(f"Failed to load LiveStockCog: {e}")
+            logging.error(f"Failed to load LiveStock cog: {e}")
             raise
