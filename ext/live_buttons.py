@@ -18,8 +18,8 @@ from discord import ui
 import logging
 import asyncio
 from datetime import datetime
-from typing import Optional, Dict
-
+from typing import List, Dict, Optional, Union
+from discord.ui import Select, Button, View, Modal, TextInput
 from .constants import (
     COLORS,
     MESSAGES,
@@ -862,6 +862,7 @@ class LiveButtonManager(BaseLockHandler):
             self.logger.error(f"Error updating buttons: {e}")
             return False
 
+# Line 865-889: Update method cleanup dengan fallback mechanism
     async def cleanup(self):
         """Cleanup resources"""
         try:
@@ -872,21 +873,29 @@ class LiveButtonManager(BaseLockHandler):
                     color=COLORS.WARNING
                 )
                 await self.current_message.edit(embed=embed, view=None)
-                
+                    
             # Clear caches
             patterns = [
                 'live_stock_message_id',
                 'world_info',
                 'available_products'
             ]
-            for pattern in patterns:
-                await self.cache_manager.delete_pattern(pattern)
-                
-            self.logger.info("LiveButtonManager cleanup completed")
             
+            try:
+                # Mencoba menggunakan delete_pattern
+                for pattern in patterns:
+                    await self.cache_manager.delete_pattern(pattern)
+            except AttributeError:
+                # Fallback: gunakan delete biasa
+                self.logger.warning("delete_pattern not available, using individual delete")
+                for pattern in patterns:
+                    await self.cache_manager.delete(pattern)
+                    
+            self.logger.info("LiveButtonManager cleanup completed")
+                
         except Exception as e:
             self.logger.error(f"Error in cleanup: {e}")
-
+        
 class LiveButtonsCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
