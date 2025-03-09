@@ -248,7 +248,6 @@ class LiveStockManager(BaseLockHandler):
             self.logger.error(f"Error in cleanup: {e}")
 
 
-@commands.Cog
 class LiveStockCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
