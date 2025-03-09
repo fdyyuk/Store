@@ -3,9 +3,14 @@ Admin Service for Store DC Bot
 Author: fdyyuk
 Created at: 2025-03-09 02:20:30 UTC
 """
-
 import logging
 import asyncio
+from typing import Optional, Dict
+from datetime import datetime
+
+import discord
+from discord.ext import commands
+from discord import ui
 from typing import Dict, Optional
 from datetime import datetime
 
@@ -72,3 +77,38 @@ class AdminService(BaseLockHandler):
             self.logger.info("AdminService cleanup completed")
         except Exception as e:
             self.logger.error(f"Error during cleanup: {e}")
+# ... (kode sebelumnya tetap sama)
+
+class AdminCog(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+        self.admin_service = AdminService(bot)
+        self.logger = logging.getLogger("AdminCog")
+
+    async def cog_load(self):
+        """Called when cog is loaded"""
+        self.logger.info("AdminCog loading...")
+
+    async def cog_unload(self):
+        """Called when cog is unloaded"""
+        await self.admin_service.cleanup()
+        self.logger.info("AdminCog unloaded")
+
+async def setup(bot):
+    """Setup AdminService with different loading flag"""
+    if not hasattr(bot, 'admin_service_loaded'):
+        try:
+            # Initialize AdminService
+            admin_service = AdminService(bot)
+            if not await admin_service.verify_dependencies():
+                raise Exception("AdminService dependencies verification failed")
+                
+            bot.admin_service = admin_service
+            bot.admin_service_loaded = True
+            logging.info(
+                f'AdminService loaded successfully at '
+                f'{datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")} UTC'
+            )
+        except Exception as e:
+            logging.error(f"Failed to load AdminService: {e}")
+            raise
