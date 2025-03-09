@@ -195,6 +195,20 @@ class StoreBot(commands.Bot):
             # Setup database first
             setup_database()
             
+            await self.wait_until_ready()
+            required_channels = [
+                ('id_live_stock', 'Live Stock Channel'),
+                ('id_log_purch', 'Purchase Log Channel'),
+                ('id_donation_log', 'Donation Log Channel'),
+                ('id_history_buy', 'Purchase History Channel')
+        ]
+        
+        for channel_id, channel_name in required_channels:
+            channel = self.get_channel(self.config[channel_id])
+            if not channel:
+                logger.error(f"{channel_name} dengan ID {self.config[channel_id]} tidak ditemukan")
+                raise ValueError(f"{channel_name} tidak ditemukan")
+        
             # Load core services first and verify
             for ext in EXTENSIONS.SERVICES:
                 try:
