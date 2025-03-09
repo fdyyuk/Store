@@ -3,7 +3,7 @@
 Discord Bot for Store DC
 Author: fdyyuk
 Created at: 2025-03-07 18:30:16 UTC
-Last Modified: 2025-03-08 13:44:26 UTC
+Last Modified: 2025-03-09 14:12:47 UTC
 """
 
 import sys
@@ -22,7 +22,7 @@ import logging
 import asyncio
 import aiohttp
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 
 # Import constants first
@@ -74,7 +74,8 @@ def check_dependencies():
         'discord.py': 'discord',
         'aiohttp': 'aiohttp',
         'sqlite3': 'sqlite3',
-        'asyncio': 'asyncio'
+        'asyncio': 'asyncio',
+        'PyNaCl': 'nacl'  # Optional for voice support
     }
     
     missing = []
@@ -82,7 +83,8 @@ def check_dependencies():
         try:
             __import__(import_name)
         except ImportError:
-            missing.append(package)
+            if package != 'PyNaCl':  # Skip PyNaCl as it's optional
+                missing.append(package)
     
     if missing:
         logger.critical(f"Missing required packages: {', '.join(missing)}")
@@ -180,97 +182,114 @@ class StoreBot(commands.Bot):
         
         self.config = load_config()
         self.cache_manager = CacheManager()
-        self.start_time = datetime.utcnow()
+        self.start_time = datetime.now(timezone.utc)
         self.maintenance_mode = False
         self._ready = asyncio.Event()
-        
-    async def wait_until_ready(self) -> None:
-        """Override to ensure bot is fully ready"""
-        await super().wait_until_ready()
-        await self._ready.wait()
-        
+
     async def setup_hook(self):
         """Setup bot extensions and database"""
         try:
             # Setup database first
+            logger.info("Setting up database...")
             setup_database()
             
-            await self.wait_until_ready()
-            required_channels = [
-                ('id_live_stock', 'Live Stock Channel'),
-                ('id_log_purch', 'Purchase Log Channel'),
-                ('id_donation_log', 'Donation Log Channel'),
-                ('id_history_buy', 'Purchase History Channel')
-        ]
-        
-        for channel_id, channel_name in required_channels:
-            channel = self.get_channel(self.config[channel_id])
-            if not channel:
-                logger.error(f"{channel_name} dengan ID {self.config[channel_id]} tidak ditemukan")
-                raise ValueError(f"{channel_name} tidak ditemukan")
-        
             # Load core services first and verify
+            logger.info("Loading core services...")
             for ext in EXTENSIONS.SERVICES:
                 try:
+                    logger.info(f"Loading service: {ext}")
                     await self.load_extension(ext)
-                    logger.info(f"Loaded service: {ext}")
+                    logger.info(f"Successfully loaded service: {ext}")
+                    await asyncio.sleep(1)  # Add delay between service loads
                 except Exception as e:
                     logger.critical(f"Failed to load critical service {ext}: {e}")
                     await self.close()
                     return
             
             # Verify all services loaded correctly
+            logger.info("Verifying core services...")
             if not EXTENSIONS.verify_loaded(self):
                 logger.critical("Critical services failed to load properly")
                 await self.close()
                 return
             
-            # Load feature extensions
+            # Load core features with dependencies
+            logger.info("Loading core features...")
             for ext in EXTENSIONS.FEATURES:
                 try:
+                    logger.info(f"Loading feature: {ext}")
                     await self.load_extension(ext)
-                    logger.info(f"Loaded feature: {ext}")
+                    logger.info(f"Successfully loaded feature: {ext}")
+                    await asyncio.sleep(2)  # Add longer delay for features
                 except Exception as e:
                     logger.error(f"Failed to load feature {ext}: {e}")
             
-            # Load cogs last
+            # Load optional cogs last
+            logger.info("Loading optional cogs...")
             for ext in EXTENSIONS.COGS:
                 try:
+                    logger.info(f"Loading cog: {ext}")
                     await self.load_extension(ext)
-                    logger.info(f"Loaded cog: {ext}")
+                    logger.info(f"Successfully loaded cog: {ext}")
                 except Exception as e:
-                    logger.warning(f"Failed to load cog {ext}: {e}")
+                    logger.warning(f"Failed to load optional cog {ext}: {e}")
+            
+            # Set ready event after everything is loaded
+            logger.info("Setting ready event...")
+            self._ready.set()
             
             logger.info("Bot setup completed successfully")
+            
         except Exception as e:
-            logger.critical(f"Failed to setup bot: {e}")
+            logger.critical(f"Failed to setup bot: {e}", exc_info=True)
             await self.close()
     
     async def on_ready(self):
         """Called when bot is ready"""
-        if self._ready.is_set():
-            return
+        try:
+            logger.info(f"Logged in as {self.user.name} ({self.user.id})")
+            logger.info(f"Discord.py Version: {discord.__version__}")
             
-        logger.info(f"Logged in as {self.user.name} ({self.user.id})")
-        logger.info(f"Discord.py Version: {discord.__version__}")
-        
-        # Set bot status
-        activity = discord.Activity(
-            type=discord.ActivityType.watching,
-            name="Growtopia Shop 🏪"
-        )
-        await self.change_presence(activity=activity)
-        
-        # Clear expired cache
-        await self.cache_manager.clear_expired()
-        
-        # Signal bot is fully ready
-        self._ready.set()
+            # Validate channels after bot is fully ready
+            logger.info("Validating channels...")
+            await asyncio.sleep(2)  # Wait a bit before validating channels
+            
+            required_channels = [
+                ('id_live_stock', 'Live Stock Channel'),
+                ('id_log_purch', 'Purchase Log Channel'),
+                ('id_donation_log', 'Donation Log Channel'),
+                ('id_history_buy', 'Purchase History Channel')
+            ]
+            
+            for channel_id, channel_name in required_channels:
+                channel = self.get_channel(self.config[channel_id])
+                if not channel:
+                    logger.error(f"{channel_name} dengan ID {self.config[channel_id]} tidak ditemukan")
+                    await self.close()
+                    return
+                logger.info(f"Found {channel_name}: {channel.name}")
+            
+            # Set bot status
+            activity = discord.Activity(
+                type=discord.ActivityType.watching,
+                name="Growtopia Shop 🏪"
+            )
+            await self.change_presence(activity=activity)
+            
+            # Clear expired cache
+            await self.cache_manager.clear_expired()
+            
+            logger.info("Bot is fully ready!")
+            
+        except Exception as e:
+            logger.critical(f"Error in on_ready: {e}", exc_info=True)
+            await self.close()
         
     async def on_error(self, event_method: str, *args, **kwargs):
         """Global error handler"""
         exc_type, exc_value, exc_traceback = sys.exc_info()
         logger.error(f"Error in {event_method}: {exc_type.__name__}: {exc_value}")
+        logger.error("Full traceback:", exc_info=True)
         
     async def close(self):
         """Cleanup before closing"""
@@ -287,7 +306,7 @@ class StoreBot(commands.Bot):
             await super().close()
             
         except Exception as e:
-            logger.error(f"Error during shutdown: {e}")
+            logger.error(f"Error during shutdown: {e}", exc_info=True)
         finally:
             logger.info("Bot shutdown complete")
 
@@ -298,12 +317,21 @@ async def run_bot():
     try:
         async with bot:
             await bot.start(bot.config['token'])
+            
+            # Add timeout for wait_until_ready
+            try:
+                await asyncio.wait_for(bot._ready.wait(), timeout=60)  # 60 seconds timeout
+            except asyncio.TimeoutError:
+                logger.critical("Bot failed to become ready within 60 seconds")
+                await bot.close()
+                return
+                
     except KeyboardInterrupt:
         logger.info("Received keyboard interrupt")
     except discord.LoginFailure:
         logger.critical("Invalid bot token")
     except Exception as e:
-        logger.critical(f"Bot crashed: {e}")
+        logger.critical(f"Bot crashed: {e}", exc_info=True)
     finally:
         if not bot.is_closed():
             await bot.close()
@@ -314,5 +342,5 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         pass
     except Exception as e:
-        logger.critical(f"Fatal error: {e}")
+        logger.critical(f"Fatal error: {e}", exc_info=True)
         sys.exit(1)
