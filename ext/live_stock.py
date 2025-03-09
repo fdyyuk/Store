@@ -253,6 +253,10 @@ class LiveStockCog(commands.Cog):
         self.bot = bot
         self.stock_manager = LiveStockManager(bot)
         self.logger = logging.getLogger("LiveStockCog")
+        
+    async def cog_load(self):
+        """Setup when cog is loaded"""
+        await self.bot.wait_until_ready()
         self.update_stock.start()
 
     def cog_unload(self):
