@@ -62,12 +62,6 @@ class ProductSelect(Select):
         self.product_service = product_service
         self.trx_manager = trx_manager
 
-         # Channel configuration
-        self.stock_channel_id = int(self.bot.config.get('id_live_stock', 0))
-        self.current_stock_message: Optional[discord.Message] = None
-        self.button_manager = None
-        self.initialized = True
-
         options = [
             discord.SelectOption(
                 label=f"{product['name']}",
@@ -1034,7 +1028,8 @@ async def setup(bot):
             await bot.add_cog(LiveButtonsCog(bot))
             bot.live_buttons_loaded = True
             logging.info(MESSAGES.SUCCESS['COG_LOADED'].format('LiveButtons'))
-            
+             'COG_LOADED': "✅ {} cogloaded successfully.",  
         except Exception as e:
             logging.error(f"Failed to load LiveButtonsCog: {e}")
             raise
+        
