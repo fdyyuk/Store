@@ -26,6 +26,7 @@ from ext.constants import (
     MAX_STOCK_FILE_SIZE,
     VALID_STOCK_FORMATS 
 )
+from ext.admin_service import AdminService
 from ext.balance_manager import BalanceManagerService
 from ext.product_manager import ProductManagerService
 from ext.trx import TransactionManager
@@ -41,7 +42,7 @@ class AdminCog(commands.Cog, BaseLockHandler, BaseResponseHandler):
         self.balance_service = BalanceManagerService(bot)
         self.product_service = ProductManagerService(bot)
         self.trx_manager = TransactionManager(bot)
-        
+        self.admin_service = AdminService(bot)
         # Load admin configuration
         try:
             with open('config.json') as f:
@@ -476,56 +477,76 @@ class AdminCog(commands.Cog, BaseLockHandler, BaseResponseHandler):
             ):
                 raise ValueError("Operation cancelled by user")
 
-            # Update maintenance status
-            conn = None
-            try:
-                conn = get_connection()
-                cursor = conn.cursor()
-                cursor.execute(
-                    "INSERT OR REPLACE INTO bot_settings (key, value) VALUES (?, ?)",
-                    ("maintenance_mode", "1" if mode_lower == "on" else "0")
-                )
-                conn.commit()
+            # Update maintenance status menggunakan AdminService
+            result = await self.admin_service.set_maintenance_mode(
+                enabled=(mode_lower == "on"),
+                reason="System maintenance" if mode_lower == "on" else None,
+                admin=str(ctx.author)
+            )
 
-                embed = discord.Embed(
-                    title="🔧 Maintenance Mode",
-                    description=(
-                        f"Maintenance mode has been turned "
-                        f"**{mode_lower.upper()}**"
-                    ),
-                    color=COLORS.WARNING if mode_lower == "on" else COLORS.SUCCESS,
-                    timestamp=datetime.utcnow()
-                )
-                embed.set_footer(text=f"Changed by {ctx.author}")
-                
-                await self.send_response_once(ctx, embed=embed)
-                self.logger.info(f"Maintenance mode {mode_lower} by {ctx.author}")
+            if not result.success:
+                raise ValueError(f"Failed to change maintenance mode: {result.error}")
 
-                if mode_lower == "on":
-                    # Notify online users
-                    for guild in self.bot.guilds:
-                        for member in guild.members:
-                            if not member.bot and member.status != discord.Status.offline:
-                                try:
-                                    await member.send(
-                                        embed=discord.Embed(
-                                            title="⚠️ Maintenance Mode",
-                                            description=(
-                                                "The bot is entering maintenance mode. "
-                                                "Some features may be unavailable. "
-                                                "We'll notify you when service is restored."
-                                            ),
-                                            color=COLORS.WARNING
-                                        )
+            embed = discord.Embed(
+                title="🔧 Maintenance Mode",
+                description=(
+                    f"Maintenance mode has been turned "
+                    f"**{mode_lower.upper()}**"
+                ),
+                color=COLORS.WARNING if mode_lower == "on" else COLORS.SUCCESS,
+                timestamp=datetime.utcnow()
+            )
+            embed.set_footer(text=f"Changed by {ctx.author}")
+            
+            await self.send_response_once(ctx, embed=embed)
+            self.logger.info(f"Maintenance mode {mode_lower} by {ctx.author}")
+
+            if mode_lower == "on":
+                # Notify online users
+                for guild in self.bot.guilds:
+                    for member in guild.members:
+                        if not member.bot and member.status != discord.Status.offline:
+                            try:
+                                await member.send(
+                                    embed=discord.Embed(
+                                        title="⚠️ Maintenance Mode",
+                                        description=(
+                                            "The bot is entering maintenance mode. "
+                                            "Some features may be unavailable. "
+                                            "We'll notify you when service is restored."
+                                        ),
+                                        color=COLORS.WARNING
                                     )
-                                except Exception as e:
-                                    self.logger.error(f"Failed to notify member {member.id}: {e}")
-
-            finally:
-                if conn:
-                    conn.close()
+                                )
+                            except Exception as e:
+                                self.logger.error(f"Failed to notify member {member.id}: {e}")
 
         await self._process_command(ctx, "maintenance", execute)
+        
+    @commands.command(name="maintenance_status")
+    async def maintenance_status(self, ctx):
+        """Check maintenance mode status"""
+        async def execute():
+            status = await self.admin_service.get_maintenance_info()
+            if not status.success:
+                raise ValueError("Failed to get maintenance status")
+
+            info = status.data
+            status_text = "🔴 Active" if info['enabled'] else "🟢 Inactive"
+            reason = f"\nReason: {info['reason']}" if info['enabled'] and info['reason'] else ""
+            timestamp = f"\nLast Updated: {info['timestamp']}" if info['timestamp'] else ""
+            updated_by = f"\nUpdated By: {info['updated_by']}" if info['updated_by'] else ""
+
+            embed = discord.Embed(
+                title="🛠️ Maintenance Status",
+                description=f"{status_text}{reason}{timestamp}{updated_by}",
+                color=COLORS.WARNING if info['enabled'] else COLORS.SUCCESS,
+                timestamp=datetime.utcnow()
+            )
+
+            await self.send_response_once(ctx, embed=embed)
+
+        await self._process_command(ctx, "maintenance_status", execute)
 
     @commands.command(name="blacklist")
     async def blacklist(self, ctx, action: str, growid: str):
@@ -658,10 +679,10 @@ class AdminCog(commands.Cog, BaseLockHandler, BaseResponseHandler):
 
 async def setup(bot):
     """Setup the Admin cog with improved logging"""
-    if not hasattr(bot, 'admin_cog_loaded'):
+    if not hasattr(bot, 'store_admin_loaded'):    # Line 661
         try:
             await bot.add_cog(AdminCog(bot))
-            bot.admin_cog_loaded = True
+            bot.store_admin_loaded = True         # Line 664
             logging.info(
                 f'Admin cog loaded successfully at '
                 f'{datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")} UTC'
