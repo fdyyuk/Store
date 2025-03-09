@@ -61,7 +61,13 @@ class ProductSelect(Select):
         self.balance_service = balance_service
         self.product_service = product_service
         self.trx_manager = trx_manager
-        
+
+         # Channel configuration
+        self.stock_channel_id = int(self.bot.config.get('id_live_stock', 0))
+        self.current_stock_message: Optional[discord.Message] = None
+        self.button_manager = None
+        self.initialized = True
+
         options = [
             discord.SelectOption(
                 label=f"{product['name']}",
@@ -706,7 +712,10 @@ class LiveButtonManager(BaseLockHandler):
             self.current_message: Optional[discord.Message] = None
             self.stock_manager = None
             self.initialized = True
-
+    def create_view(self):
+        """Membuat view dengan button-button"""
+        return ShopView(self.bot)  # Tambahkan method ini
+        
     async def set_stock_manager(self, stock_manager):
         """Set stock manager untuk integrasi"""
         self.stock_manager = stock_manager
