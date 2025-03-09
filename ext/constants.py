@@ -96,27 +96,25 @@ class Balance:
 class EXTENSIONS:
     # Core services harus diload pertama dan berurutan
     SERVICES: List[str] = [
-        'ext.product_manager',    # Load 1st - independent
-        'ext.balance_manager',    # Load 2nd - depends on product_manager
-        'ext.trx'                # Load 3rd - depends on both above
+        'ext.admin_service',     # Load 1st - independent
+        'ext.product_manager',   # Load 2nd - independent
+        'ext.balance_manager',   # Load 3rd - depends on product_manager
+        'ext.trx'               # Load 4th - depends on both above
     ]
     
     # Core features yang bergantung pada services
     FEATURES: List[str] = [
-        'ext.admin_service',
-        'ext.live_stock',        # Depends on product_manager
-        'ext.live_buttons',      # Depends on services
-        'ext.donate'             # Depends on balance_manager
+        'ext.live_stock',      # Load after services
+        'ext.live_buttons'     # Load last, depends on live_stock
     ]
     
-    # Cogs yang menggunakan services - load terakhir
+    # Optional cogs - load terakhir
     COGS: List[str] = [
         'cogs.stats',
         'cogs.automod',
         'cogs.tickets',
         'cogs.welcome', 
-        'cogs.leveling',
-        'cogs.admin'            # Admin paling terakhir karena bergantung pada semua service
+        'cogs.leveling'
     ]
     
     # Urutan loading yang benar
