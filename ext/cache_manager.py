@@ -230,3 +230,31 @@ class CacheManager:
 
         except Exception as e:
             self.logger.error(f"Error cleaning up expired cache: {e}")
+# Tambahkan method baru setelah method cleanup_expired (setelah line 232)
+# Line 233-249 (Method Baru):
+    async def delete_pattern(self, pattern: str):
+        """Delete all cache keys matching the pattern"""
+        try:
+            # Hapus dari memory cache
+            keys_to_delete = [
+                key for key in self.memory_cache.keys()
+                if pattern in key
+            ]
+            for key in keys_to_delete:
+                del self.memory_cache[key]
+                
+            # Hapus dari database
+            async with self._lock:
+                conn = get_connection()
+                cursor = conn.cursor()
+                cursor.execute(
+                    "DELETE FROM cache WHERE key LIKE ?",
+                    (f"%{pattern}%",)
+                )
+                conn.commit()
+                
+            self.logger.info(f"Deleted {len(keys_to_delete)} cache entries matching pattern: {pattern}")
+                
+        except Exception as e:
+            self.logger.error(f"Error deleting cache pattern {pattern}: {e}")
+            raise
