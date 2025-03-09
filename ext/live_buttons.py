@@ -914,9 +914,41 @@ class LiveButtonsCog(commands.Cog):
     async def check_display(self):
         """Periodically check if display is working"""
         try:
-            if not self.button_manager.current_message:
+            # Cek apakah stock manager sudah tersedia
+            if not self.stock_manager:
+                stock_cog = self.bot.get_cog('LiveStockCog')
+                if stock_cog and stock_cog.stock_manager:
+                    self.stock_manager = stock_cog.stock_manager
+                    await self.button_manager.set_stock_manager(self.stock_manager)
+
+            # Dapatkan pesan yang sedang aktif
+            current_message = self.stock_manager.current_stock_message if self.stock_manager else None
+            
+            if not current_message:
                 self.logger.warning("Stock message not found, attempting recovery...")
-                await self.button_manager.force_update()
+                if self.stock_manager:
+                    # Biarkan stock manager membuat pesan baru
+                    channel = self.bot.get_channel(self.stock_manager.stock_channel_id)
+                    if channel:
+                        embed = await self.stock_manager.create_stock_embed()
+                        view = self.button_manager.create_view()
+                        self.stock_manager.current_stock_message = await channel.send(embed=embed, view=view)
+            else:
+                # Update buttons jika perlu
+                try:
+                    is_maintenance = await self.button_manager.admin_service.is_maintenance_mode()
+                    if is_maintenance:
+                        await current_message.edit(view=None)
+                    else:
+                        # Update hanya view, biarkan embed ditangani stock manager
+                        view = self.button_manager.create_view()
+                        await current_message.edit(view=view)
+                except discord.NotFound:
+                    self.logger.warning("Message not found, will be recreated by stock manager")
+                    self.stock_manager.current_stock_message = None
+                except Exception as e:
+                    self.logger.error(f"Error updating buttons: {e}")
+
         except Exception as e:
             self.logger.error(f"Error in display check: {e}")
 
@@ -935,19 +967,28 @@ class LiveButtonsCog(commands.Cog):
             stock_cog = self.bot.get_cog('LiveStockCog')
             if stock_cog:
                 self.stock_manager = stock_cog.stock_manager
-                await self.button_manager.set_stock_manager(self.stock_manager)
-                break
+                if self.stock_manager:
+                    await self.button_manager.set_stock_manager(self.stock_manager)
+                    # Tunggu sebentar agar stock manager siap
+                    await asyncio.sleep(1)
+                    # Update buttons
+                    if self.stock_manager.current_stock_message:
+                        view = self.button_manager.create_view()
+                        try:
+                            await self.stock_manager.current_stock_message.edit(view=view)
+                        except:
+                            pass
+                    break
             retries += 1
             await asyncio.sleep(1)
         
         if not self.stock_manager:
             self.logger.error("Failed to get StockManager after max retries")
-        
-        await self.button_manager.update_buttons()
 
     async def cog_load(self):
         """Setup when cog is loaded"""
         self.logger.info("LiveButtonsCog loading...")
+        # Tunggu LiveStockCog siap
         stock_cog = self.bot.get_cog('LiveStockCog')
         if stock_cog:
             self.stock_manager = stock_cog.stock_manager
