@@ -10,6 +10,15 @@ from enum import Enum, auto
 from typing import Dict, Union, List
 from datetime import timedelta
 
+# Tambahkan di bagian atas file setelah import
+COG_LOADED = {
+    'PRODUCT': 'product_manager_loaded',
+    'BALANCE': 'balance_manager_loaded',
+    'TRANSACTION': 'transaction_manager_loaded',
+    'LIVE_STOCK': 'live_stock_loaded', 
+    'LIVE_BUTTONS': 'live_buttons_loaded',
+    'ADMIN': 'admin_service_loaded'
+}
 # File Size Settings
 MAX_STOCK_FILE_SIZE = 5 * 1024 * 1024  # 5MB max file size for stock files
 MAX_ATTACHMENT_SIZE = 8 * 1024 * 1024  # 8MB max attachment size
@@ -122,14 +131,7 @@ class EXTENSIONS:
             'TransactionCog'
         ]
         return all(bot.get_cog(service) for service in required_services)
-    COG_LOADED = {
-    'PRODUCT': 'product_manager_loaded',
-    'BALANCE': 'balance_manager_loaded',
-    'TRANSACTION': 'transaction_manager_loaded',
-    'LIVE_STOCK': 'live_stock_loaded', 
-    'LIVE_BUTTONS': 'live_buttons_loaded',
-    'ADMIN': 'admin_service_loaded'
-}
+
 # Currency Settings
 class CURRENCY_RATES:
     # Base rates (in WL)
