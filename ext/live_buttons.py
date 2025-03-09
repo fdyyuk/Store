@@ -899,13 +899,16 @@ class LiveButtonManager(BaseLockHandler):
         except Exception as e:
             self.logger.error(f"Error in cleanup: {e}")
         
-class LiveButtonsCog(commands.Cog):
+class LiveStockCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.button_manager = LiveButtonManager(bot)
-        self.stock_manager = None
-        self.logger = logging.getLogger("LiveButtonsCog")
-        self.check_display.start()
+        self.stock_manager = LiveStockManager(bot)
+        self.logger = logging.getLogger("LiveStockCog")
+        
+    async def cog_load(self):
+        """Setup when cog is loaded"""
+        await self.bot.wait_until_ready()
+        self.update_stock.start()
 
     def cog_unload(self):
         """Cleanup when cog is unloaded"""
@@ -1028,8 +1031,6 @@ async def setup(bot):
             await bot.add_cog(LiveButtonsCog(bot))
             bot.live_buttons_loaded = True
             logging.info(MESSAGES.SUCCESS['COG_LOADED'].format('LiveButtons'))
-             'COG_LOADED': "✅ {} cogloaded successfully.",  
         except Exception as e:
             logging.error(f"Failed to load LiveButtonsCog: {e}")
             raise
-        
