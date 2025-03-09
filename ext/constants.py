@@ -228,9 +228,9 @@ class MESSAGES:
         'PRODUCT_UPDATED': "✅ Product updated successfully.",      # New
         'PRODUCT_DELETED': "✅ Product deleted successfully.",      # New
         'STOCK_SOLD': "✅ Stock sold successfully.",               # New
-        'CACHE_CLEARED': "✅ Cache cleared successfully."          # New
+        'CACHE_CLEARED': "✅ Cache cleared successfully.",          # New  <-- Tambahkan koma di sini
+        'COG_LOADED': "✅ {} loaded successfully."                  # New
     }
-    
     ERROR = {
         'INSUFFICIENT_BALANCE': "❌ Balance tidak cukup!",
         'OUT_OF_STOCK': "❌ Stock habis!",
