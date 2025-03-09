@@ -263,9 +263,51 @@ class LiveStockCog(commands.Cog):
     async def update_stock(self):
         """Update stock display periodically"""
         try:
-            await self.stock_manager.update_stock_display()
+            # Dapatkan channel
+            channel = self.bot.get_channel(self.stock_manager.stock_channel_id)
+            if not channel:
+                self.logger.error(f"Channel stock dengan ID {self.stock_manager.stock_channel_id} tidak ditemukan")
+                return
+
+            # Update stock display
+            if not self.stock_manager.current_stock_message:
+                # Buat pesan baru jika belum ada
+                embed = await self.stock_manager.create_stock_embed()
+                view = self.stock_manager.button_manager.create_view() if self.stock_manager.button_manager else None
+                self.stock_manager.current_stock_message = await channel.send(embed=embed, view=view)
+            else:
+                # Update pesan yang ada dengan mempertahankan view
+                try:
+                    existing_view = self.stock_manager.current_stock_message.view
+                    embed = await self.stock_manager.create_stock_embed()
+                    await self.stock_manager.current_stock_message.edit(embed=embed, view=existing_view)
+                except discord.NotFound:
+                    # Pesan tidak ditemukan, buat pesan baru
+                    self.logger.warning("Pesan stock tidak ditemukan, membuat pesan baru...")
+                    self.stock_manager.current_stock_message = None
+                    embed = await self.stock_manager.create_stock_embed()
+                    view = self.stock_manager.button_manager.create_view() if self.stock_manager.button_manager else None
+                    self.stock_manager.current_stock_message = await channel.send(embed=embed, view=view)
+                except Exception as e:
+                    self.logger.error(f"Error updating stock message: {e}")
+                    
         except Exception as e:
             self.logger.error(f"Error in stock update loop: {e}")
+
+    @update_stock.before_loop
+    async def before_update_stock(self):
+        """Wait until bot is ready"""
+        await self.bot.wait_until_ready()
+        # Pastikan channel ada
+        channel = self.bot.get_channel(self.stock_manager.stock_channel_id)
+        if not channel:
+            self.logger.error(f"Channel stock dengan ID {self.stock_manager.stock_channel_id} tidak ditemukan")
+            return
+        # Hapus pesan lama di channel jika ada
+        try:
+            await channel.purge(limit=1)
+        except Exception as e:
+            self.logger.error(f"Error clearing channel: {e}")
 
     @update_stock.before_loop
     async def before_update_stock(self):
